@@ -1,0 +1,79 @@
+version: 1
+
+defaults:
+  registry: ghcr.io/laraoci
+  user:
+    name: laravel
+    uid: 1000
+    gid: 1000
+  workdir: /var/www/html
+  debian: trixie
+  platforms:
+    - linux/amd64
+    - linux/arm64
+
+php:
+  # Exactly one version carries `default: true`; it backs :latest.
+  # `status` is `supported` | `deprecated`; only `supported` is built.
+  # A per-version `debian:` key here would OVERRIDE defaults.debian - it is the
+  # trixie-transition mechanism, NOT a product axis. Absent in normal
+  # operation; present only while migrating a single version off an ageing OS.
+  "8.3":
+    status: supported
+  "8.4":
+    status: supported
+    default: true
+  "8.5":
+    status: supported
+
+extensions:
+  # The twelve-extension core set. Uniform across all three PHP
+  # versions - install-php-extensions supports every one on 5.5-8.5.
+  core:
+    - bcmath
+    - exif
+    - gd
+    - imagick
+    - intl
+    - opcache
+    - pcntl
+    - pdo_mysql
+    - pdo_pgsql
+    - redis
+    - sockets
+    - zip
+
+size_budgets:
+  # PLACEHOLDERS, compressed MB. These are provisional guesses, NOT measured
+  # values. M1 (LOCI-021) measures real sizes on all three PHP versions and
+  # replaces every number here, then D17 freezes them. CI fails on overrun.
+  runtime: 220
+  cli: 225
+  fpm: 235
+  builder: 500
+  queue: 225
+  scheduler: 225
+
+images:
+  # `parent` defines build order; CI topologically sorts (no hand-maintained
+  # ordering). The graph is single-rooted at `runtime`:
+  # runtime -> cli, fpm, builder ; cli -> queue, scheduler
+  runtime:
+    dockerfile: images/runtime/Dockerfile
+  cli:
+    parent: runtime
+    dockerfile: images/cli/Dockerfile
+  fpm:
+    parent: runtime
+    dockerfile: images/fpm/Dockerfile
+    exposes: [9000]
+  builder:
+    parent: runtime
+    dockerfile: images/builder/Dockerfile
+  queue:
+    parent: cli
+    dockerfile: images/queue/Dockerfile
+  scheduler:
+    parent: cli
+    dockerfile: images/scheduler/Dockerfile
+
