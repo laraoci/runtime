@@ -13,9 +13,18 @@ platform_filter=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --php) php_filter="$2"; shift 2 ;;
-    --image) image_filter="$2"; shift 2 ;;
-    --platform) platform_filter="$2"; shift 2 ;;
+    --php)
+      php_filter="$2"
+      shift 2
+      ;;
+    --image)
+      image_filter="$2"
+      shift 2
+      ;;
+    --platform)
+      platform_filter="$2"
+      shift 2
+      ;;
     -h | --help)
       echo "usage: matrix.sh [--php V] [--image NAME] [--platform P]" >&2
       exit 0
@@ -24,7 +33,7 @@ while [[ $# -gt 0 ]]; do
       echo "error: unknown argument '$1'" >&2
       exit 2
       ;;
-    esac
+  esac
 done
 
 # Supported (non-deprecated) PHP versions, in file order.
