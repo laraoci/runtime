@@ -1,0 +1,5 @@
+# LaraOCI
+*.log
+.DS_Store
+/tmp/
+/.idea/

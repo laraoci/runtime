@@ -1,0 +1,48 @@
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          curl -fsSL https://github.com/mvdan/sh/releases/download/v3.8.0/shfmt_v3.8.0_linux_amd64 \
+            -o /usr/local/bin/shfmt && sudo chmod +x /usr/local/bin/shfmt
+      - name: shellcheck
+        run: shellcheck -S warning bin/*.sh bin/lib/*.sh
+      - name: shfmt
+        run: shfmt -d -i 2 -ci bin
+
+  actions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
+
+  bats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - name: Install yq (mikefarah) and jq
+        run: |
+          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
+            -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+          sudo apt-get update && sudo apt-get install -y jq
+      - name: Run unit tests
+        run: tests/bats/bin/bats tests/unit
