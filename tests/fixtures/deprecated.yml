@@ -1,0 +1,16 @@
+version: 1
+defaults:
+  registry: ghcr.io/laraoci
+  platforms: [linux/amd64, linux/arm64]
+php:
+  "8.3": { status: supported }
+  "8.4": { status: supported, default: true }
+  "8.5": { status: deprecated }
+size_budgets: { runtime: 1, cli: 1, fpm: 1, builder: 1, queue: 1, scheduler: 1 }
+images:
+  runtime: {}
+  cli: { parent: runtime }
+  fpm: { parent: runtime }
+  builder: { parent: runtime }
+  queue: { parent: cli }
+  scheduler: { parent: cli }
