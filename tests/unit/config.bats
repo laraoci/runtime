@@ -36,3 +36,8 @@ setup() {
   run bash -c "yq -r '[ . as \$d | \$d.images | keys[] as \$k | select((\$d.size_budgets | has(\$k)) | not) ] | length' config/images.yml"
   [ "$output" -eq 0 ]
 }
+
+@test "config: every image carries a description for its OCI label" {
+  run bash -c "yq -r '[.images[] | select((.description // \"\") == \"\")] | length' config/images.yml"
+  [ "$output" -eq 0 ]
+}

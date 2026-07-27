@@ -73,6 +73,22 @@ jobs:
             echo "gid=$(yq -r '.defaults.user.gid' config/images.yml)"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Resolve OCI labels (§11)
+        id: oci
+        env:
+          IMAGE: ${{ inputs.image }}
+          PHP: ${{ inputs.php }}
+        run: |
+          set -euo pipefail
+          base="php:${PHP}-fpm-trixie"
+          digest="$(docker buildx imagetools inspect "$base" --format '{{.Manifest.Digest}}')"
+          {
+            echo "base_name=docker.io/library/${base}"
+            echo "base_digest=${digest}"
+            echo "description=$(yq -r ".images.\"${IMAGE}\".description" config/images.yml)"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -89,5 +105,27 @@ jobs:
             USER_NAME=${{ steps.identity.outputs.name }}
             USER_UID=${{ steps.identity.outputs.uid }}
             USER_GID=${{ steps.identity.outputs.gid }}
+          labels: |
+            org.opencontainers.image.title=laraoci/${{ inputs.image }}
+            org.opencontainers.image.description=${{ steps.oci.outputs.description }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.oci.outputs.created }}
+            org.opencontainers.image.version=${{ inputs.php }}-trixie
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.base.name=${{ steps.oci.outputs.base_name }}
+            org.opencontainers.image.base.digest=${{ steps.oci.outputs.base_digest }}
           cache-from: type=gha
           cache-to: type=gha,mode=${{ inputs.cache_mode }}
+
+      - name: Assert the required labels are present (§11)
+        if: ${{ !inputs.push }}
+        run: |
+          set -euo pipefail
+          labels="$(docker image inspect "${{ steps.meta.outputs.image_ref }}" --format '{{json .Config.Labels}}')"
+          for key in source revision created version licenses description documentation base.name base.digest; do
+            jq -e --arg k "org.opencontainers.image.$key" '.[$k] | length > 0' >/dev/null <<<"$labels" \
+              || { echo "missing label org.opencontainers.image.$key" >&2; exit 1; }
+          done
+          jq . <<<"$labels"

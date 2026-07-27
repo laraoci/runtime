@@ -60,20 +60,26 @@ images:
   # runtime -> cli, fpm, builder ; cli -> queue, scheduler
   runtime:
     dockerfile: images/runtime/Dockerfile
+    description: Shared base layer for LaraOCI Laravel images - PHP extensions, hardened ImageMagick policy, non-root user, tuned ini.
   cli:
     parent: runtime
     dockerfile: images/cli/Dockerfile
+    description: Laravel artisan commands, migrations and one-off tasks.
   fpm:
     parent: runtime
     dockerfile: images/fpm/Dockerfile
     exposes: [9000]
+    description: PHP-FPM for Laravel, to be run behind Nginx, Caddy or Traefik.
   builder:
     parent: runtime
     dockerfile: images/builder/Dockerfile
+    description: Composer and Node build toolchain for multi-stage builds. NOT for production runtime.
   queue:
     parent: cli
     dockerfile: images/queue/Dockerfile
+    description: Laravel queue worker with graceful SIGTERM shutdown.
   scheduler:
     parent: cli
     dockerfile: images/scheduler/Dockerfile
+    description: Laravel scheduler - run exactly one replica.
 
