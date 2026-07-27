@@ -68,15 +68,4 @@ jobs:
       push: false
       cache_mode: max
       dockerfile: ${{ matrix.dockerfile }}
-
-  size:
-    needs: matrix
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install yq (mikefarah)
-        run: |
-          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
-            -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
-      - name: Size report (advisory)
-        run: bin/size-check.sh --report || true
+      structure_test: true

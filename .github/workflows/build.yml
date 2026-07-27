@@ -23,6 +23,10 @@ on:
       dockerfile:
         required: true
         type: string
+      structure_test:
+        required: false
+        type: boolean
+        default: false
     outputs:
       image_ref:
         description: Fully-qualified image reference
@@ -129,3 +133,25 @@ jobs:
               || { echo "missing label org.opencontainers.image.$key" >&2; exit 1; }
           done
           jq . <<<"$labels"
+
+      # Both of the steps below need the image present in the local daemon, so
+      # they are gated on the build-and-load path. On a push build there is
+      # nothing to inspect locally; M4 re-does size measurement against the
+      # registry once `imagetools inspect` has something to look at.
+      - name: Install container-structure-test
+        if: ${{ inputs.structure_test && !inputs.push }}
+        run: |
+          sudo curl -fsSL https://github.com/GoogleContainerTools/container-structure-test/releases/download/v1.22.1/container-structure-test-linux-amd64 \
+            -o /usr/local/bin/container-structure-test && sudo chmod +x /usr/local/bin/container-structure-test
+
+      # No-ops with a message for any image that has no tests/structure/<name>.yaml
+      # yet, so M2 and M3 gain coverage by adding a file rather than editing CI.
+      - name: Structure tests (§10.1)
+        if: ${{ inputs.structure_test && !inputs.push }}
+        run: bin/structure-test.sh --image "${{ inputs.image }}" --ref "${{ steps.meta.outputs.image_ref }}"
+
+      - name: Size report (D17, advisory on PRs)
+        if: ${{ !inputs.push }}
+        env:
+          LARAOCI_TAG: ${{ inputs.php }}-trixie
+        run: bin/size-check.sh --image "${{ inputs.image }}" --report | tee -a "$GITHUB_STEP_SUMMARY"
