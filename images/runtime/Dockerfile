@@ -18,6 +18,28 @@ ARG USER_NAME=laravel
 ARG USER_UID=1000
 ARG USER_GID=1000
 
+COPY --from=mlocati/php-extension-installer:2@sha256:b6d3fa381b9ba5cf051117c1c601d6a523b590e534bf3d56eb4fbe352949c138 \
+     /usr/bin/install-php-extensions /usr/local/bin/
+
+# ---------------------------------------------------------------------------
+# RUN 1 - BOUNDARY: this is the ONE instruction allowed to touch apt or the
+# extension installer, and it is deliberately not split. Tasks in LOCI-014 and
+# LOCI-018 add to this same instruction; see the Ghostscript comment there.
+#
+# Every negative assertion is written `if cond; then exit 1; fi` rather than
+# `! cond`, because `set -e` never exits on a status inverted with `!`.
+#
+# SC2016 is suppressed deliberately: `$e` below is a PHP variable, and the
+# single quotes are what stop the shell from expanding it before PHP sees it.
+# Double quotes here would be the bug the rule thinks it is preventing.
+# hadolint ignore=SC2016
+RUN set -eux; \
+    install-php-extensions \
+      bcmath exif gd imagick intl opcache pcntl \
+      pdo_mysql pdo_pgsql redis sockets zip; \
+    php -r 'foreach (["pcntl", "posix", "imagick"] as $e) { if (!extension_loaded($e)) { fwrite(STDERR, "FAIL: extension $e is not loaded\n"); exit(1); } }'; \
+    rm -rf /var/lib/apt/lists/* /usr/local/bin/install-php-extensions
+
 # ---------------------------------------------------------------------------
 # RUN 2 - BOUNDARY: identity only. Kept out of the extension layer so that
 # changing the UID does not invalidate an expensive rebuild.
