@@ -1,0 +1,76 @@
+name: pr
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      legs: ${{ steps.gen.outputs.legs }}
+      count: ${{ steps.gen.outputs.count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install yq (mikefarah) and jq
+        run: |
+          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
+            -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Resolve affected images and build the amd64 matrix
+        id: gen
+        run: |
+          base="origin/${{ github.base_ref }}"
+          mapfile -t images < <(bin/affected.sh --base "$base")
+          if [[ ${#images[@]} -eq 0 ]]; then
+            echo 'legs={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'count=0' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          args=()
+          for img in "${images[@]}"; do args+=(--image "$img"); done
+          # matrix.sh takes a single --image; run it per image and merge.
+          merged='{"include":[]}'
+          for img in "${images[@]}"; do
+            leg="$(bin/matrix.sh --image "$img" --platform linux/amd64)"
+            merged="$(jq -c --argjson a "$merged" --argjson b "$leg" \
+              '{include: ($a.include + $b.include)}' <<<'{}')"
+          done
+          {
+            echo "legs=$merged"
+            echo "count=$(jq '.include | length' <<<"$merged")"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: matrix
+    if: ${{ needs.matrix.outputs.count != '0' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.legs) }}
+    uses: ./.github/workflows/build.yml
+    with:
+      php: ${{ matrix.php }}
+      image: ${{ matrix.image }}
+      platforms: ${{ matrix.platform }}
+      push: false
+      cache_mode: max
+      dockerfile: tests/stub/Dockerfile
+
+  size:
+    needs: matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install yq (mikefarah)
+        run: |
+          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
+            -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+      - name: Size report (advisory)
+        run: bin/size-check.sh --report || true
