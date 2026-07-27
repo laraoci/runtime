@@ -44,10 +44,24 @@ extensions:
     - zip
 
 size_budgets:
-  # PLACEHOLDERS, compressed MB. These are provisional guesses, NOT measured
-  # values. M1 (LOCI-021) measures real sizes on all three PHP versions and
-  # replaces every number here, then D17 freezes them. CI fails on overrun.
-  runtime: 220
+  # Compressed MB, enforced by bin/size-check.sh (D17). CI fails on overrun.
+  #
+  # `runtime` is MEASURED, not a guess - see docs/size-report-m1.md for the three
+  # per-version numbers, the tool, the date and the host arch. Frozen per D17.
+  # Formula: max(8.3, 8.4, 8.5) + 10% headroom, rounded up to the nearest 5 MB.
+  # Measured 2026-07-27 on linux/amd64: 227.6 / 230.5 / 232.6 -> 260.
+  # The headroom absorbs Debian package drift between the weekly rebuilds (§9.3).
+  #
+  # Note the placeholder this replaced was 220, which every supported version
+  # already exceeded. Size grows monotonically with the PHP minor, so 8.5 sets
+  # the budget and a future 8.6 should be expected to raise it again.
+  runtime: 260
+  #
+  # The other five are still PLACEHOLDERS. Only `runtime` exists to measure in
+  # M1; M2 freezes cli/fpm/builder and M3 freezes queue/scheduler the same way.
+  # None of them can legitimately be lower than `runtime` - they all descend
+  # from it - so these numbers are known to be wrong and will fail the moment
+  # those images are built. That is deliberate: a red build is the reminder.
   cli: 225
   fpm: 235
   builder: 500
