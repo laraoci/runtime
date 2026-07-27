@@ -90,6 +90,13 @@ RUN set -eux; \
 # it changes nothing, but USER_UID is a build arg: without -l, a consumer
 # building with a high UID gets a sparse lastlog expanded to gigabytes in the
 # layer. Nothing in a container reads lastlog anyway.
+#
+# The LaraOCI assets directory (§6.1) is created HERE, with an explicit 0755,
+# rather than being left to the COPY that fills it. BuildKit applies a COPY's
+# --chmod to the parent directories it creates as well as to the file, so
+# `COPY --chmod=0644 x /usr/local/share/laraoci/templates/` yields drw-r--r--
+# directories that only root can traverse - every non-root read then fails with
+# "Permission denied" while the file mode itself looks perfectly correct.
 RUN set -eux; \
     if getent group "${USER_GID}" >/dev/null; then \
       echo "FAIL: GID ${USER_GID} already exists: $(getent group "${USER_GID}")" >&2; exit 1; fi; \
@@ -100,6 +107,7 @@ RUN set -eux; \
     mkdir -p /var/www/html; \
     chown "${USER_UID}:${USER_GID}" /var/www/html; \
     chmod 0755 /var/www/html; \
+    install -d -m 0755 /usr/local/share/laraoci/templates; \
     test "$(id -u "${USER_NAME}")" = "${USER_UID}"; \
     test "$(id -g "${USER_NAME}")" = "${USER_GID}"
 
@@ -140,10 +148,31 @@ RUN set -eux; \
     rm /tmp/policy.xml; \
     php -r '$f = "/tmp/laraoci-policy-check"; file_put_contents($f, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n"); $mem = (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY); if ($mem !== 256 * 1048576) { fwrite(STDERR, "FAIL: policy.xml was not parsed - memory limit is $mem, expected " . (256 * 1048576) . "\n"); exit(1); } foreach (["PDF:$f", "MVG:$f", "TEXT:$f"] as $spec) { try { (new Imagick())->readImage($spec); fwrite(STDERR, "FAIL: $spec was ALLOWED\n"); exit(1); } catch (ImagickException $e) { if (!preg_match("/(security policy|not authoriz)/i", $e->getMessage())) { fwrite(STDERR, "FAIL: $spec threw without a policy message: " . $e->getMessage() . "\n"); exit(1); } } } unlink($f); echo "laraoci: policy verified live (memory limit and PDF/MVG/TEXT denials)\n";'
 
-# thread=1 in the policy plus this variable is a correctness fix as much as a
-# security one: OpenMP pools are per process, so twenty FPM children each
-# opening one will thrash a CPU-limited container (§3.2).
-ENV MAGICK_THREAD_LIMIT=1 \
+COPY --chmod=0644 config/php/zz-laraoci.ini.template /usr/local/share/laraoci/templates/
+
+# The §6.4 defaults live here and nowhere else: visible to `docker inspect`,
+# inherited by every descendant, and overridable per container. The entrypoint
+# reads them rather than carrying a second copy of the defaults.
+#
+# PHP_OPCACHE_PRELOAD is deliberately unset (§6.4) - preload is opt-in (D14),
+# and per 🧭 4 the entrypoint only honours it for FPM.
+# PHP_MEMORY_LIMIT / PHP_MAX_EXECUTION_TIME carry the FPM values; M2's cli image
+# overrides them to 512M / 0 (§6.4).
+# LARAOCI_PRELOAD_* are M3's (LOCI-035) - the preload script does not ship yet,
+# so setting them now would be inert configuration.
+#
+# thread=1 in the ImageMagick policy plus MAGICK_THREAD_LIMIT is a correctness
+# fix as much as a security one: OpenMP pools are per process, so twenty FPM
+# children each opening one will thrash a CPU-limited container (§3.2).
+ENV PHP_MEMORY_LIMIT=256M \
+    PHP_MAX_EXECUTION_TIME=30 \
+    PHP_UPLOAD_MAX_FILESIZE=16M \
+    PHP_POST_MAX_SIZE=16M \
+    PHP_OPCACHE_ENABLE=1 \
+    PHP_OPCACHE_VALIDATE_TIMESTAMPS=0 \
+    PHP_OPCACHE_MEMORY_CONSUMPTION=192 \
+    PHP_OPCACHE_MAX_ACCELERATED_FILES=20000 \
+    MAGICK_THREAD_LIMIT=1 \
     MAGICK_TMPDIR=/tmp
 
 WORKDIR /var/www/html
