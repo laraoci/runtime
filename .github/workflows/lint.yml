@@ -24,9 +24,15 @@ jobs:
           curl -fsSL https://github.com/mvdan/sh/releases/download/v3.8.0/shfmt_v3.8.0_linux_amd64 \
             -o /usr/local/bin/shfmt && sudo chmod +x /usr/local/bin/shfmt
       - name: shellcheck
-        run: shellcheck -S warning bin/*.sh bin/lib/*.sh
+        run: |
+          set -euo pipefail
+          mapfile -t scripts < <(git ls-files '*.sh')
+          shellcheck -S warning "${scripts[@]}"
       - name: shfmt
-        run: shfmt -d -i 2 -ci bin
+        run: |
+          set -euo pipefail
+          mapfile -t scripts < <(git ls-files '*.sh')
+          shfmt -d -i 2 -ci "${scripts[@]}"
 
   actions:
     runs-on: ubuntu-latest
@@ -53,6 +59,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
       - name: Install hadolint
         run: |
           set -euo pipefail
@@ -61,5 +69,9 @@ jobs:
       - name: hadolint
         run: |
           set -euo pipefail
-          find images tests \( -name 'Dockerfile' -o -name '*.Dockerfile' \) -print0 \
+          # tests/bats is a vendored submodule. Its Dockerfiles are third-party
+          # code and hadolint fails on them; this job only passed in CI because
+          # its checkout happened to omit submodules (M6).
+          find images tests -path tests/bats -prune -o \
+            \( -name 'Dockerfile' -o -name '*.Dockerfile' \) -print0 \
             | xargs -0 -r hadolint
