@@ -40,17 +40,30 @@ render() {
     if [ -z "$value" ]; then
       die "$name is empty but $(basename "$template") requires a value"
     fi
+    # A newline in a value appends arbitrary directives to the rendered ini -
+    # PHP_MEMORY_LIMIT='256M<newline>auto_prepend_file = /evil.php' is a
+    # config-injection primitive for anyone who can set only that one variable.
+    #
+    # grep CANNOT be used here: it splits its input on newlines, so a newline is
+    # a separator it never sees as content and '[[:cntrl:]]' matches nothing.
+    # Counting bytes that survive `tr -d '[:print:]'` does work. Verified under
+    # dash, which is /bin/sh in the image.
+    if [ "$(printf '%s' "$value" | LC_ALL=C tr -d '[:print:]' | wc -c)" -ne 0 ]; then
+      die "$name contains a non-printable character; refusing to render it into $(basename "$template")"
+    fi
   done
 
   if ! tmp="$(mktemp 2>/dev/null)"; then
     log "warning: cannot create a temporary file; keeping the build-time $target"
     return 0
   fi
+  # Every failure below leaves through die(); without this trap an envsubst
+  # failure would exit on `set -e` and leave the temp file behind.
+  trap 'rm -f "$tmp"' EXIT
 
   envsubst "$allowlist" <"$template" >"$tmp"
 
   if grep -q '\${' "$tmp"; then
-    rm -f "$tmp"
     die "unsubstituted placeholders remain after rendering $template"
   fi
 
@@ -59,6 +72,7 @@ render() {
   fi
 
   rm -f "$tmp"
+  trap - EXIT
 }
 
 render "$TEMPLATE_DIR/zz-laraoci.ini.template" "$CONF_D/zz-laraoci.ini"

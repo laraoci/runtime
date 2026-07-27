@@ -123,3 +123,42 @@ teardown() {
   run cat "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
   [[ "$output" == *"999M"* ]]
 }
+
+@test "entrypoint: a newline in a required value is fatal (L3)" {
+  # Otherwise anyone who can set one PHP_* variable can append arbitrary
+  # directives - auto_prepend_file, disable_functions - to the rendered ini.
+  PHP_MEMORY_LIMIT="$(printf '256M\nauto_prepend_file = /tmp/pwn.php')"
+  export PHP_MEMORY_LIMIT
+  run bin/entrypoint.sh php -v
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"non-printable"* ]]
+  [[ "$output" == *"PHP_MEMORY_LIMIT"* ]]
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  [[ "$output" != *"auto_prepend_file"* ]]
+}
+
+@test "entrypoint: a carriage return in a required value is fatal (L3)" {
+  PHP_MEMORY_LIMIT="$(printf '256M\rx')"
+  export PHP_MEMORY_LIMIT
+  run bin/entrypoint.sh php -v
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"non-printable"* ]]
+}
+
+@test "entrypoint: ordinary values are still accepted (L3 regression guard)" {
+  export PHP_MEMORY_LIMIT=1024M
+  export PHP_MAX_EXECUTION_TIME=0
+  run bin/entrypoint.sh php -v
+  [ "$status" -eq 0 ]
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  [[ "$output" == *"memory_limit = 1024M"* ]]
+  [[ "$output" == *"max_execution_time = 0"* ]]
+}
+
+@test "entrypoint: no temp file is left behind (R5)" {
+  before="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l)"
+  run bin/entrypoint.sh php -v
+  [ "$status" -eq 0 ]
+  after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l)"
+  [ "$after" -le "$before" ]
+}
