@@ -21,8 +21,12 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y shellcheck
-          curl -fsSL https://github.com/mvdan/sh/releases/download/v3.8.0/shfmt_v3.8.0_linux_amd64 \
-            -o /usr/local/bin/shfmt && sudo chmod +x /usr/local/bin/shfmt
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tool.sh \
+            --url https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64 \
+            --sha256 fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1 \
+            --dest "$HOME/.local/bin/shfmt"
       - name: shellcheck
         run: |
           set -euo pipefail
@@ -49,8 +53,12 @@ jobs:
       - name: Install yq (mikefarah) and jq
         run: |
           set -euo pipefail
-          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
-            -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tool.sh \
+            --url https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 \
+            --sha256 fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 \
+            --dest "$HOME/.local/bin/yq"
           sudo apt-get update && sudo apt-get install -y jq gettext-base
       - name: Run unit tests
         run: tests/bats/bin/bats tests/unit
@@ -64,8 +72,12 @@ jobs:
       - name: Install hadolint
         run: |
           set -euo pipefail
-          sudo curl -fsSL https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 \
-            -o /usr/local/bin/hadolint && sudo chmod +x /usr/local/bin/hadolint
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tool.sh \
+            --url https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-linux-x86_64 \
+            --sha256 6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47 \
+            --dest "$HOME/.local/bin/hadolint"
       - name: hadolint
         run: |
           set -euo pipefail

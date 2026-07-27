@@ -26,8 +26,12 @@ jobs:
       - name: Install yq (mikefarah) and jq
         run: |
           set -euo pipefail
-          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
-            -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tool.sh \
+            --url https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 \
+            --sha256 fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 \
+            --dest "$HOME/.local/bin/yq"
           sudo apt-get update && sudo apt-get install -y jq
 
       - name: Resolve affected images and build the amd64 matrix

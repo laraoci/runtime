@@ -74,3 +74,14 @@ run_bodies() {
   [ "$output" -ge 1 ]
 }
 
+@test "workflows: no CI tool is downloaded without a checksum (L5)" {
+  local f out
+  for f in .github/workflows/*.yml; do
+    out="$(run_bodies "$f" | grep -n 'curl ' || true)"
+    if [ -n "$out" ]; then
+      echo "$f calls curl directly - use bin/fetch-tool.sh so the asset is verified:" >&2
+      echo "$out" >&2
+      false
+    fi
+  done
+}
