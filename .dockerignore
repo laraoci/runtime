@@ -1,0 +1,28 @@
+# Deny everything, then re-include exactly what a build reads. An allowlist
+# means a new top-level directory cannot silently enlarge the context - which is
+# what shipped .git, .idea/ and the whole tests/bats submodule to BuildKit on
+# every one of 36 legs, and what would let a future `COPY . .` in a descendant
+# image absorb them without anyone noticing.
+#
+# Docker's matcher is NOT gitignore: it evaluates each path against every
+# pattern in order with last-match-wins, and descends into a directory excluded
+# by `*` when a later `!` could re-include something under it. `*` matches one
+# path segment and does not cross `/`, so re-including a directory re-includes
+# its whole subtree.
+*
+
+# Exactly three paths are read from the context by images/runtime/Dockerfile.
+# Verified: with a deny-all list, BuildKit fails on these three and no others.
+#   bin/entrypoint.sh                   - installed as laraoci-entrypoint
+#   config/php/zz-laraoci.ini.template  - the php.ini baseline
+#   config/imagemagick/policy.xml       - the hardened ImageMagick policy
+#
+# `!config` re-includes the directory rather than the two files, so
+# config/images.yml rides along unread. That is deliberate: it is 3 kB, it is
+# the source of truth every image derives from, and naming whole directories
+# keeps this list from going stale the moment a template is added.
+!bin/entrypoint.sh
+!config
+
+# buildx reads the Dockerfile named by `file:` relative to the context.
+!images
