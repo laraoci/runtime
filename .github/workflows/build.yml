@@ -1,0 +1,76 @@
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      php:
+        required: true
+        type: string
+      image:
+        required: true
+        type: string
+      platforms:
+        required: true
+        type: string
+      push:
+        required: false
+        type: boolean
+        default: false
+      cache_mode:
+        required: false
+        type: string
+        default: max
+      dockerfile:
+        required: true
+        type: string
+        default: tests/stub/Dockerfile
+    outputs:
+      image_ref:
+        description: Fully-qualified image reference
+        value: ${{ jobs.build.outputs.image_ref }}
+      digest:
+        description: Image digest
+        value: ${{ jobs.build.outputs.digest }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+      digest: ${{ steps.build.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compute image reference
+        id: meta
+        run: echo "image_ref=ghcr.io/laraoci/${{ inputs.image }}:${{ inputs.php }}-trixie" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        if: ${{ inputs.push }}
+        uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        with:
+          registry: ghcr.ip
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          load: ${{ !inputs.push }}
+          tags: ${{ steps.meta.outputs.image_ref }}
+          build-args: |
+            PHP_VERSION=${{ inputs.php }}
+            DEBIAN_RELEASE=trixie
+          cache-from: type=gha
+          cache-to: type=gha,mode=${{ inputs.cache_mode }}
