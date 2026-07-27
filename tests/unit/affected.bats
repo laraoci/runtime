@@ -37,8 +37,23 @@ affected() { printf '%s\n' "$@" | bin/affected.sh; }
   [ -z "$output" ]
 }
 
-@test "affected: tests/structure change rebuilds nothing" {
+@test "affected: a structure-test config rebuilds exactly its image (M4)" {
+  # tests/structure/<name>.yaml only runs inside a build leg for <name>, so a
+  # PR that edits one must build that image or the new assertions never run.
   run affected "tests/structure/runtime.yaml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "runtime" ]
+}
+
+@test "affected: a structure-test config does NOT rebuild descendants (M4)" {
+  # cli has its own config; runtime.yaml says nothing about it.
+  run affected "tests/structure/runtime.yaml"
+  [[ "$output" != *"cli"* ]]
+}
+
+@test "affected: unit tests, fixtures and probes still rebuild nothing" {
+  run affected "tests/unit/affected.bats" "tests/fixtures/budgets.yml" "tests/probe/no-extra.Dockerfile"
+  [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 

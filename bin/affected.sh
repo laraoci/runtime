@@ -74,7 +74,21 @@ add_with_descendants() {
 for path in "${changed[@]}"; do
   [[ -z "$path" ]] && continue
   case "$path" in
-    docs/* | tests/*) : ;; # documentation and tests never rebuild an image
+    # Documentation and the test inputs that only feed the bats job never
+    # rebuild an image.
+    docs/* | tests/unit/* | tests/fixtures/* | tests/probe/* | tests/stub/* | tests/bats/*) : ;;
+    # A structure-test config runs ONLY inside a build leg for its own image, so
+    # editing one must build that image - and only that image, since every image
+    # carries its own config (M4).
+    tests/structure/*.yaml)
+      name="${path#tests/structure/}"
+      name="${name%.yaml}"
+      if [[ -n "${IMAGE_PARENT[$name]+set}" ]]; then
+        affected["$name"]=1
+      else
+        add_all # a config for an unknown image - be conservative
+      fi
+      ;;
     config/* | bin/* | .github/workflows/build.yml) add_all ;;
     images/*/*)
       name="${path#images/}"
