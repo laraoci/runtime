@@ -22,6 +22,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --image)
+      require_arg "$1" "${2:-}"
       image_filter="$2"
       shift 2
       ;;

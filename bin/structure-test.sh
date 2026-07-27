@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
 # Runs container-structure-test against tests/structure/<image>.yaml.
 #
 # An image with no config is a deliberate no-op rather than an error: M1 ships
@@ -13,14 +17,17 @@ config_dir="tests/structure"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --image)
+      require_arg "$1" "${2:-}"
       image="$2"
       shift 2
       ;;
     --ref)
+      require_arg "$1" "${2:-}"
       ref="$2"
       shift 2
       ;;
     --config-dir)
+      require_arg "$1" "${2:-}"
       config_dir="$2"
       shift 2
       ;;

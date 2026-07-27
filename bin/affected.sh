@@ -12,6 +12,7 @@ as_json=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)
+      require_arg "$1" "${2:-}"
       base="$2"
       shift 2
       ;;

@@ -14,14 +14,17 @@ platform_filter=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --php)
+      require_arg "$1" "${2:-}"
       php_filter="$2"
       shift 2
       ;;
     --image)
+      require_arg "$1" "${2:-}"
       image_filter="$2"
       shift 2
       ;;
     --platform)
+      require_arg "$1" "${2:-}"
       platform_filter="$2"
       shift 2
       ;;

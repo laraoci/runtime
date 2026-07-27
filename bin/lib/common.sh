@@ -24,3 +24,17 @@ require_mikefarah_yq() {
     exit 1
   fi
 }
+
+# Guard for an option that takes a value. Without it, `--image` with nothing
+# after it dies on `$2: unbound variable` under `set -u` and exits 1, where
+# every other usage error in this project exits 2.
+#
+# Call as: require_arg "$1" "${2:-}"
+# The `${2:-}` is required at the call site - a bare "$2" would trip `set -u`
+# before this function is ever entered.
+require_arg() {
+  if [[ $# -lt 2 || -z "$2" ]]; then
+    echo "error: $1 requires a value" >&2
+    exit 2
+  fi
+}
