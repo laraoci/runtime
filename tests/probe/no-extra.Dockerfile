@@ -24,8 +24,10 @@
 #    no-extra probe measured 239.0 MB against runtime's 230.5 MB.
 #
 # RUN 1 below must stay a mirror of images/runtime/Dockerfile's RUN 1, minus the
-# assertions. If that instruction changes, change this one too, or the delta
-# silently stops describing the image that actually ships.
+# assertions. This is enforced by tests/unit/probe.bats, which compares the
+# extension list and the Ghostscript purge list in both files against each other
+# and against config/images.yml - so drift fails the build rather than quietly
+# producing a delta that describes an image nobody ships.
 ARG PHP_VERSION=8.4
 ARG DEBIAN_RELEASE=trixie
 FROM php:${PHP_VERSION}-fpm-${DEBIAN_RELEASE}
