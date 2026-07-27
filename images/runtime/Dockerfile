@@ -68,7 +68,7 @@ RUN set -eux; \
       bcmath exif gd imagick intl opcache pcntl \
       pdo_mysql pdo_pgsql redis sockets zip; \
     apt-get update; \
-    apt-get install -y --no-install-recommends gettext-base; \
+    apt-get install -y --no-install-recommends tini gettext-base; \
     apt-get purge -y --auto-remove \
       ghostscript libgs10 libgs10-common libgs-common poppler-data; \
     if command -v gs >/dev/null 2>&1; then echo "FAIL: gs is still on PATH" >&2; exit 1; fi; \
@@ -81,6 +81,7 @@ RUN set -eux; \
     php -r 'foreach (["pcntl", "posix", "imagick"] as $e) { if (!extension_loaded($e)) { fwrite(STDERR, "FAIL: extension $e is not loaded\n"); exit(1); } }'; \
     php -r '$f = array_map("strtoupper", Imagick::queryFormats()); foreach (["JPEG","PNG","WEBP"] as $x) { if (!in_array($x, $f, true)) { fwrite(STDERR, "FAIL: imagick lost $x\n"); exit(1); } }'; \
     test -x /usr/bin/envsubst; \
+    test -x /usr/bin/tini; \
     rm -rf /var/lib/apt/lists/* /usr/local/bin/install-php-extensions
 
 # ---------------------------------------------------------------------------
@@ -210,4 +211,17 @@ RUN set -eux; \
 
 WORKDIR /var/www/html
 
+# §6.2 requires this stated rather than inherited; the explicitness is the
+# documentation. NOTE FOR M2: the upstream fpm image sets SIGQUIT, and php-fpm
+# treats SIGQUIT as graceful shutdown and SIGTERM as immediate termination.
+# images/fpm/Dockerfile MUST set `STOPSIGNAL SIGQUIT` back. SIGTERM is correct
+# here because cli, queue, and scheduler trap it through pcntl.
+STOPSIGNAL SIGTERM
+
 USER ${USER_NAME}
+
+# Exec form in both (§6.2). tini is PID 1 (D9); it execs our entrypoint, which
+# execs docker-php-entrypoint, which execs the command - no wrapper is left in
+# the process tree and signals reach the real process.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/laraoci-entrypoint"]
+CMD ["php", "-v"]
