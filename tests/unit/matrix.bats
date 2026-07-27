@@ -51,3 +51,28 @@ setup() {
   run bash -c "bin/matrix.sh --image runtime --platform linux/amd64 | jq '.include | length'"
   [ "$output" -eq 3 ]
 }
+
+@test "matrix: every leg carries the dockerfile path from config" {
+  run bash -c "bin/matrix.sh | jq -e '.include | all(has(\"dockerfile\") and (.dockerfile | length > 0))'"
+  [ "$status" -eq 0 ]
+}
+
+@test "matrix: the runtime leg points at images/runtime/Dockerfile" {
+  run bash -c "bin/matrix.sh --image runtime --php 8.4 --platform linux/amd64 | jq -r '.include[0].dockerfile'"
+  [ "$output" = "images/runtime/Dockerfile" ]
+}
+
+@test "matrix: every leg carries the debian suite from config (M2)" {
+  run bash -c "bin/matrix.sh | jq -e '.include | all(.debian == \"trixie\")'"
+  [ "$status" -eq 0 ]
+}
+
+@test "matrix: a per-version debian override is honoured (spec §271)" {
+  run bash -c "CONFIG=tests/fixtures/debian-override.yml bin/matrix.sh | jq -r '[.include[] | select(.php == \"8.3\") | .debian] | unique | .[]'"
+  [ "$output" = "bookworm" ]
+}
+
+@test "matrix: a version without an override falls back to defaults.debian" {
+  run bash -c "CONFIG=tests/fixtures/debian-override.yml bin/matrix.sh | jq -r '[.include[] | select(.php == \"8.4\") | .debian] | unique | .[]'"
+  [ "$output" = "trixie" ]
+}

@@ -7,6 +7,12 @@ permissions:
   contents: read
   packages: write
 
+# Consecutive pushes to a PR otherwise run overlapping full matrices; at M4's
+# 36 legs that is the single largest avoidable CI cost.
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   matrix:
     runs-on: ubuntu-latest
@@ -20,25 +26,51 @@ jobs:
 
       - name: Install yq (mikefarah) and jq
         run: |
-          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
-            -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tool.sh \
+            --url https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 \
+            --sha256 fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 \
+            --dest "$HOME/.local/bin/yq"
           sudo apt-get update && sudo apt-get install -y jq
 
       - name: Resolve affected images and build the amd64 matrix
         id: gen
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          base="origin/${{ github.base_ref }}"
-          mapfile -t images < <(bin/affected.sh --base "$base")
+          set -euo pipefail
+          base="origin/${BASE_REF}"
+
+          # A plain assignment from a command substitution DOES trip errexit,
+          # where `mapfile < <(...)` does not - so a failure in affected.sh can
+          # no longer be reported as "nothing to build" (M3).
+          affected_out="$(bin/affected.sh --base "$base")"
+
+          images=()
+          if [[ -n "$affected_out" ]]; then
+            mapfile -t images <<<"$affected_out"
+          fi
+
           if [[ ${#images[@]} -eq 0 ]]; then
+            echo "::notice::no image is affected by this diff"
             echo 'legs={"include":[]}' >> "$GITHUB_OUTPUT"
             echo 'count=0' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          args=()
-          for img in "${images[@]}"; do args+=(--image "$img"); done
+
           # matrix.sh takes a single --image; run it per image and merge.
+          # An image whose Dockerfile does not exist yet is skipped rather than
+          # failing the leg: M1 ships only runtime, and M2/M3 pick their images
+          # up here simply by adding the file.
           merged='{"include":[]}'
           for img in "${images[@]}"; do
+            df="$(yq -r ".images.\"$img\".dockerfile" config/images.yml)"
+            if [[ ! -f "$df" ]]; then
+              echo "::notice::skipping $img - $df does not exist yet"
+              continue
+            fi
             leg="$(bin/matrix.sh --image "$img" --platform linux/amd64)"
             merged="$(jq -c --argjson a "$merged" --argjson b "$leg" \
               '{include: ($a.include + $b.include)}' <<<'{}')"
@@ -61,16 +93,6 @@ jobs:
       platforms: ${{ matrix.platform }}
       push: false
       cache_mode: max
-      dockerfile: tests/stub/Dockerfile
-
-  size:
-    needs: matrix
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install yq (mikefarah)
-        run: |
-          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
-            -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
-      - name: Size report (advisory)
-        run: bin/size-check.sh --report || true
+      dockerfile: ${{ matrix.dockerfile }}
+      debian: ${{ matrix.debian }}
+      structure_test: true

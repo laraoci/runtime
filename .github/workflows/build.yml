@@ -12,6 +12,10 @@ on:
       platforms:
         required: true
         type: string
+        description: >-
+          Comma-separated buildx platform list. When push is false the result is
+          loaded into the local Docker daemon, which supports exactly ONE
+          platform - pass a single value on that path. Enforced below.
       push:
         required: false
         type: boolean
@@ -23,6 +27,14 @@ on:
       dockerfile:
         required: true
         type: string
+      debian:
+        required: true
+        type: string
+        description: Debian suite for this leg, resolved from config/images.yml by bin/matrix.sh.
+      structure_test:
+        required: false
+        type: boolean
+        default: false
     outputs:
       image_ref:
         description: Fully-qualified image reference
@@ -46,7 +58,13 @@ jobs:
 
       - name: Compute image reference
         id: meta
-        run: echo "image_ref=ghcr.io/laraoci/${{ inputs.image }}:${{ inputs.php }}-trixie" >> "$GITHUB_OUTPUT"
+        env:
+          IMAGE: ${{ inputs.image }}
+          PHP: ${{ inputs.php }}
+          DEBIAN: ${{ inputs.debian }}
+        run: |
+          set -euo pipefail
+          echo "image_ref=ghcr.io/laraoci/${IMAGE}:${PHP}-${DEBIAN}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -57,6 +75,57 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install yq (mikefarah)
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tool.sh \
+            --url https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 \
+            --sha256 fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 \
+            --dest "$HOME/.local/bin/yq"
+
+      - name: Resolve identity from config/images.yml (D8)
+        id: identity
+        run: |
+          set -euo pipefail
+          {
+            echo "name=$(yq -r '.defaults.user.name' config/images.yml)"
+            echo "uid=$(yq -r '.defaults.user.uid' config/images.yml)"
+            echo "gid=$(yq -r '.defaults.user.gid' config/images.yml)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve OCI labels (§11)
+        id: oci
+        env:
+          IMAGE: ${{ inputs.image }}
+          PHP: ${{ inputs.php }}
+          DEBIAN: ${{ inputs.debian }}
+        run: |
+          set -euo pipefail
+          base="php:${PHP}-fpm-${DEBIAN}"
+          digest="$(docker buildx imagetools inspect "$base" --format '{{.Manifest.Digest}}')"
+          {
+            echo "base_name=docker.io/library/${base}"
+            echo "base_digest=${digest}"
+            echo "description=$(yq -r ".images.\"${IMAGE}\".description" config/images.yml)"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Reject a multi-platform build that cannot be loaded
+        if: ${{ !inputs.push }}
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORMS" in
+            *,*)
+              echo "::error::platforms='${PLATFORMS}' with push=false. BuildKit cannot load a manifest list into the Docker daemon, so this leg would fail inside the build action with an opaque exporter error. Call this workflow with one platform per leg, or set push=true." >&2
+              exit 1
+              ;;
+          esac
+          echo "single platform '${PLATFORMS}' - safe to load"
 
       - name: Build
         id: build
@@ -70,6 +139,77 @@ jobs:
           tags: ${{ steps.meta.outputs.image_ref }}
           build-args: |
             PHP_VERSION=${{ inputs.php }}
-            DEBIAN_RELEASE=trixie
+            DEBIAN_RELEASE=${{ inputs.debian }}
+            BASE_DIGEST=@${{ steps.oci.outputs.base_digest }}
+            USER_NAME=${{ steps.identity.outputs.name }}
+            USER_UID=${{ steps.identity.outputs.uid }}
+            USER_GID=${{ steps.identity.outputs.gid }}
+          labels: |
+            org.opencontainers.image.title=laraoci/${{ inputs.image }}
+            org.opencontainers.image.description=${{ steps.oci.outputs.description }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.oci.outputs.created }}
+            org.opencontainers.image.version=${{ inputs.php }}-${{ inputs.debian }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.base.name=${{ steps.oci.outputs.base_name }}
+            org.opencontainers.image.base.digest=${{ steps.oci.outputs.base_digest }}
+          # PR legs READ the cache but must never WRITE it: Actions cache entries
+          # written from a PR branch are restorable by workflows on the default
+          # branch, so an unmerged PR could otherwise seed layers that a later
+          # release build ships.
           cache-from: type=gha
-          cache-to: type=gha,mode=${{ inputs.cache_mode }}
+          cache-to: ${{ inputs.push && format('type=gha,mode={0}', inputs.cache_mode) || '' }}
+
+      - name: Assert the required labels are present (§11)
+        if: ${{ !inputs.push }}
+        env:
+          IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          labels="$(docker image inspect "$IMAGE_REF" --format '{{json .Config.Labels}}')"
+          for key in source revision created version licenses description documentation base.name base.digest; do
+            jq -e --arg k "org.opencontainers.image.$key" '.[$k] | length > 0' >/dev/null <<<"$labels" \
+              || { echo "missing label org.opencontainers.image.$key" >&2; exit 1; }
+          done
+          jq . <<<"$labels"
+
+        # Both of the steps below need the image present in the local daemon, so
+        # they are gated on the build-and-load path. On a push build there is
+        # nothing to inspect locally; M4 re-does size measurement against the
+        # registry once `imagetools inspect` has something to look at.
+        #
+        # CONSEQUENCE, stated so it is not lost: the artifact that gets PUBLISHED
+        # is the one artifact never structure-tested. M4 must run the structure
+        # tests against the pushed digest, not only against the PR build.
+      - name: Install container-structure-test
+        if: ${{ inputs.structure_test && !inputs.push }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tool.sh \
+            --url https://github.com/GoogleContainerTools/container-structure-test/releases/download/v1.22.1/container-structure-test-linux-amd64 \
+            --sha256 fa35e89512a8978585f76cf41397956d2e3a30c62c2ad3fb857b1597074d14ca \
+            --dest "$HOME/.local/bin/container-structure-test"
+
+      # No-ops with a message for any image that has no tests/structure/<name>.yaml
+      # yet, so M2 and M3 gain coverage by adding a file rather than editing CI.
+      - name: Structure tests (§10.1)
+        if: ${{ inputs.structure_test && !inputs.push }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          bin/structure-test.sh --image "$IMAGE" --ref "$IMAGE_REF"
+
+      - name: Size report (D17, advisory on PRs)
+        if: ${{ !inputs.push }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          LARAOCI_TAG: ${{ inputs.php }}-${{ inputs.debian }}
+        run: |
+          set -euo pipefail
+          bin/size-check.sh --image "$IMAGE" --report | tee -a "$GITHUB_STEP_SUMMARY"

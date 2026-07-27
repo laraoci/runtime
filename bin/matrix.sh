@@ -14,14 +14,17 @@ platform_filter=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --php)
+      require_arg "$1" "${2:-}"
       php_filter="$2"
       shift 2
       ;;
     --image)
+      require_arg "$1" "${2:-}"
       image_filter="$2"
       shift 2
       ;;
     --platform)
+      require_arg "$1" "${2:-}"
       platform_filter="$2"
       shift 2
       ;;
@@ -36,52 +39,54 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Supported (non-deprecated) PHP versions, in file order.
-mapfile -t php_versions < <(
-  yq -r '.php | to_entries | .[] | select(.value.status != "deprecated") | .key' "$CONFIG"
-)
+# Supported (non-deprecated) PHP versions, in file order, each with the Debian
+# suite it builds against. A per-version `debian:` key overrides defaults.debian
+# - the §3.1 transition mechanism, unset in normal operation (spec §271).
+default_debian="$(yq -r '.defaults.debian' "$CONFIG")"
+php_versions=()
+declare -A php_debian=()
+# One field per line, two reads per record - the same idiom as
+# read_image_graph, and for the same reason. `@tsv` with IFS=$'\t' would work
+# here today only by accident: the empty field is the LAST one and read strips
+# trailing IFS whitespace. Add a third column, or reorder these two, and
+# adjacent-tab collapsing silently shifts every value one slot left.
+while IFS= read -r v && IFS= read -r d; do
+  [[ -z "$v" ]] && continue
+  php_versions+=("$v")
+  if [[ -n "$d" ]]; then
+    php_debian["$v"]="$d"
+  else
+    php_debian["$v"]="$default_debian"
+  fi
+done < <(yq -r '
+  .php | to_entries | .[]
+  | select(.value.status != "deprecated")
+  | [.key, (.value.debian // "")]
+  | .[]' "$CONFIG")
 
-# Image names and their parents.
-mapfile -t image_names < <(yq -r '.images | keys | .[]' "$CONFIG")
-declare -A parent=()
-for img in "${image_names[@]}"; do
-  parent["$img"]="$(yq -r ".images.\"$img\".parent // \"\"" "$CONFIG")"
-done
+read_image_graph
 
-# Topological sort by parent (Kahn-style): emit an image once its parent has
-# been emitted. Build order must never be hand-maintained.
-sorted=()
-declare -A emitted=()
-while ((${#sorted[@]} < ${#image_names[@]})); do
-  progress=0
-  for img in "${image_names[@]}"; do
-    [[ -n "${emitted[$img]:-}" ]] && continue
-    p="${parent[$img]}"
-    if [[ -z "$p" || -n "${emitted[$p]:-}" ]]; then
-      sorted+=("$img")
-      emitted["$img"]=1
-      progress=1
-    fi
-  done
-  ((progress)) || {
-    echo "error: cycle or dangling parent in images graph" >&2
-    exit 1
-  }
-done
+# Platform defaults are read once; a per-image override arrives in the graph.
+mapfile -t default_platforms < <(yq -r '.defaults.platforms | .[]' "$CONFIG")
 
 legs=()
 for php in "${php_versions[@]}"; do
   [[ -n "$php_filter" && "$php" != "$php_filter" ]] && continue
-  for img in "${sorted[@]}"; do
+  debian="${php_debian[$php]}"
+  for img in "${IMAGE_ORDER[@]}"; do
     [[ -n "$image_filter" && "$img" != "$image_filter" ]] && continue
-    mapfile -t platforms < <(
-      yq -r ".images.\"$img\".platforms // .defaults.platforms | .[]" "$CONFIG"
-    )
+    dockerfile="${IMAGE_DOCKERFILE[$img]}"
+    if [[ -n "${IMAGE_PLATFORMS[$img]}" ]]; then
+      IFS=',' read -r -a platforms <<<"${IMAGE_PLATFORMS[$img]}"
+    else
+      platforms=("${default_platforms[@]}")
+    fi
     for plat in "${platforms[@]}"; do
       [[ -n "$platform_filter" && "$plat" != "$platform_filter" ]] && continue
       legs+=("$(jq -nc \
         --arg php "$php" --arg image "$img" --arg platform "$plat" \
-        '{php: $php, image: $image, platform: $platform}')")
+        --arg dockerfile "$dockerfile" --arg debian "$debian" \
+        '{php: $php, image: $image, platform: $platform, dockerfile: $dockerfile, debian: $debian}')")
     done
   done
 done

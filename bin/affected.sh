@@ -12,6 +12,7 @@ as_json=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)
+      require_arg "$1" "${2:-}"
       base="$2"
       shift 2
       ;;
@@ -40,19 +41,21 @@ else
   mapfile -t changed
 fi
 
-# Image names and the parent->children adjacency.
-mapfile -t image_names < <(yq -r '.images | keys | .[]' "$CONFIG")
+read_image_graph
+
+# parent -> children adjacency. Every parent is guaranteed to be a real image,
+# because read_image_graph rejected dangling parents already.
 declare -A children=()
-for img in "${image_names[@]}"; do children["$img"]=""; done
-for img in "${image_names[@]}"; do
-  p="$(yq -r ".images.\"$img\".parent // \"\"" "$CONFIG")"
+for img in "${IMAGE_NAMES[@]}"; do children["$img"]=""; done
+for img in "${IMAGE_NAMES[@]}"; do
+  p="${IMAGE_PARENT[$img]}"
   [[ -n "$p" ]] && children["$p"]+="$img "
 done
 
 declare -A affected=()
 
 add_all() {
-  for i in "${image_names[@]}"; do affected["$i"]=1; done
+  for i in "${IMAGE_NAMES[@]}"; do affected["$i"]=1; done
 }
 
 # BFS over descendants: the image itself plus everything that inherits from it.
@@ -71,7 +74,21 @@ add_with_descendants() {
 for path in "${changed[@]}"; do
   [[ -z "$path" ]] && continue
   case "$path" in
-    docs/* | tests/*) : ;; # documentation and tests never rebuild an image
+    # Documentation and the test inputs that only feed the bats job never
+    # rebuild an image.
+    docs/* | tests/unit/* | tests/fixtures/* | tests/probe/* | tests/stub/* | tests/bats/*) : ;;
+    # A structure-test config runs ONLY inside a build leg for its own image, so
+    # editing one must build that image - and only that image, since every image
+    # carries its own config (M4).
+    tests/structure/*.yaml)
+      name="${path#tests/structure/}"
+      name="${name%.yaml}"
+      if [[ -n "${IMAGE_PARENT[$name]+set}" ]]; then
+        affected["$name"]=1
+      else
+        add_all # a config for an unknown image - be conservative
+      fi
+      ;;
     config/* | bin/* | .github/workflows/build.yml) add_all ;;
     images/*/*)
       name="${path#images/}"
@@ -87,16 +104,15 @@ for path in "${changed[@]}"; do
 done
 
 result=()
-for img in "${image_names[@]}"; do
+for img in "${IMAGE_NAMES[@]}"; do
   [[ -n "${affected[$img]:-}" ]] && result+=("$img")
 done
 
 if ((as_json)); then
-  if ((${#result[@]} == 0)); then
-    echo '[]'
-  else
-    printf '%s\n' "${result[@]}" | jq -R . | jq -sc .
-  fi
+  # printf with zero arguments still emits one newline, which split("\n") turns
+  # into two empty strings - both filtered out. So the empty case needs no
+  # special handling and one jq does the whole job.
+  printf '%s\n' "${result[@]+"${result[@]}"}" | jq -Rsc 'split("\n") | map(select(length > 0))'
   exit 0
 fi
 
