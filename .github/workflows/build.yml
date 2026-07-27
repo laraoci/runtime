@@ -118,6 +118,7 @@ jobs:
           build-args: |
             PHP_VERSION=${{ inputs.php }}
             DEBIAN_RELEASE=${{ inputs.debian }}
+            BASE_DIGEST=@${{ steps.oci.outputs.base_digest }}
             USER_NAME=${{ steps.identity.outputs.name }}
             USER_UID=${{ steps.identity.outputs.uid }}
             USER_GID=${{ steps.identity.outputs.gid }}

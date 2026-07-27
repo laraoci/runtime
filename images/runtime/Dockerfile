@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # LaraOCI runtime - the shared base layer for every LaraOCI image (spec §7.1, D2).
 #
 # Derives from the -fpm upstream variant (D18 / §3.4): it ships
@@ -10,7 +12,12 @@
 # come from the build context rather than from a hand-edited file per image.
 ARG PHP_VERSION=8.4
 ARG DEBIAN_RELEASE=trixie
-FROM php:${PHP_VERSION}-fpm-${DEBIAN_RELEASE}
+# BASE_DIGEST pins the exact base CI already resolved, so that
+# org.opencontainers.image.base.digest describes what was actually built rather
+# than a second, independent lookup of a mutable tag (L12). The value arrives
+# with its own leading '@'; empty is correct for a local build off the tag.
+ARG BASE_DIGEST=""
+FROM php:${PHP_VERSION}-fpm-${DEBIAN_RELEASE}${BASE_DIGEST}
 # Identity is passed in from config/images.yml (D8 / §6.1). A UID that silently
 # differs between images is the failure D8 exists to prevent, so these have no
 # second source of truth: the workflow reads images.yml and passes them here.
@@ -120,8 +127,6 @@ RUN set -eux; \
     test "$(id -u "${USER_NAME}")" = "${USER_UID}"; \
     test "$(id -g "${USER_NAME}")" = "${USER_GID}"
 
-COPY config/imagemagick/policy.xml /tmp/policy.xml
-
 # ---------------------------------------------------------------------------
 # RUN 3 - BOUNDARY: must come AFTER the extension install, because
 # /etc/ImageMagick-* does not exist until imagick pulls ImageMagick in (trap 4).
@@ -145,8 +150,15 @@ COPY config/imagemagick/policy.xml /tmp/policy.xml
 # decode delegate" rather than a policy denial, so the path rule cannot be
 # proven this way. MVG and TEXT are asserted instead - they do go through the
 # coder policy.
+#
+# The policy arrives as a BIND MOUNT, not a COPY. A COPY commits the file to its
+# own layer, where `rm` in a later instruction hides it without reclaiming it -
+# the same additive-layer rule RUN 1 exists to respect (L4). A mount leaves no
+# layer, so there is nothing to clean up and nothing to extract.
+#
 # hadolint ignore=SC2016
-RUN set -eux; \
+RUN --mount=type=bind,source=config/imagemagick/policy.xml,target=/tmp/policy.xml \
+    set -eux; \
     found=''; \
     for d in /etc/ImageMagick-7 /etc/ImageMagick-6; do \
       if [ -d "$d" ]; then install -m 0644 -o root -g root /tmp/policy.xml "$d/policy.xml"; found="$d"; fi; \
@@ -154,7 +166,6 @@ RUN set -eux; \
     if [ -z "$found" ]; then \
       echo "FAIL: no /etc/ImageMagick-* directory - refusing to ship imagick without a policy" >&2; exit 1; fi; \
     echo "laraoci: ImageMagick policy installed to $found"; \
-    rm /tmp/policy.xml; \
     php -r '$f = "/tmp/laraoci-policy-check"; file_put_contents($f, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n"); $mem = (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY); if ($mem !== 256 * 1048576) { fwrite(STDERR, "FAIL: policy.xml was not parsed - memory limit is $mem, expected " . (256 * 1048576) . "\n"); exit(1); } foreach (["PDF:$f", "MVG:$f", "TEXT:$f"] as $spec) { try { (new Imagick())->readImage($spec); fwrite(STDERR, "FAIL: $spec was ALLOWED\n"); exit(1); } catch (ImagickException $e) { if (!preg_match("/(security policy|not authoriz)/i", $e->getMessage())) { fwrite(STDERR, "FAIL: $spec threw without a policy message: " . $e->getMessage() . "\n"); exit(1); } } } unlink($f); echo "laraoci: policy verified live (memory limit and PDF/MVG/TEXT denials)\n";'
 
 COPY --chmod=0644 config/php/zz-laraoci.ini.template /usr/local/share/laraoci/templates/
