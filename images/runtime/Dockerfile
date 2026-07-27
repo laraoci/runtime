@@ -103,6 +103,49 @@ RUN set -eux; \
     test "$(id -u "${USER_NAME}")" = "${USER_UID}"; \
     test "$(id -g "${USER_NAME}")" = "${USER_GID}"
 
+COPY config/imagemagick/policy.xml /tmp/policy.xml
+
+# ---------------------------------------------------------------------------
+# RUN 3 - BOUNDARY: must come AFTER the extension install, because
+# /etc/ImageMagick-* does not exist until imagick pulls ImageMagick in (trap 4).
+# Separate from RUN 1 so that editing the policy is a cheap rebuild.
+#
+# The directory is detected, not hardcoded: trixie is ImageMagick 7 today and
+# the point of detection is surviving the suite bump that changes it. Detection
+# that finds nothing must FAIL - a silently policy-less imagick is precisely
+# the ImageTragick surface D13 exists to remove.
+#
+# The assertion checks the RESOURCE limit first. That is the robust canary: if
+# ImageMagick's tokenizer rejects the file it loads an empty policy and silently
+# allows everything, and the memory limit reverts to a host-derived default. A
+# single backtick in the file is enough to cause that.
+#
+# The PDF probe file must EXIST. A missing path throws "unable to open image",
+# which is an ImagickException too - so asserting only that an exception is
+# raised (as §10.1 suggests) passes even with no policy at all.
+#
+# @-prefixed indirect reads are NOT asserted: ImageMagick 7 fails them with "no
+# decode delegate" rather than a policy denial, so the path rule cannot be
+# proven this way. MVG and TEXT are asserted instead - they do go through the
+# coder policy.
+# hadolint ignore=SC2016
+RUN set -eux; \
+    found=''; \
+    for d in /etc/ImageMagick-7 /etc/ImageMagick-6; do \
+      if [ -d "$d" ]; then install -m 0644 -o root -g root /tmp/policy.xml "$d/policy.xml"; found="$d"; fi; \
+    done; \
+    if [ -z "$found" ]; then \
+      echo "FAIL: no /etc/ImageMagick-* directory - refusing to ship imagick without a policy" >&2; exit 1; fi; \
+    echo "laraoci: ImageMagick policy installed to $found"; \
+    rm /tmp/policy.xml; \
+    php -r '$f = "/tmp/laraoci-policy-check"; file_put_contents($f, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n"); $mem = (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY); if ($mem !== 256 * 1048576) { fwrite(STDERR, "FAIL: policy.xml was not parsed - memory limit is $mem, expected " . (256 * 1048576) . "\n"); exit(1); } foreach (["PDF:$f", "MVG:$f", "TEXT:$f"] as $spec) { try { (new Imagick())->readImage($spec); fwrite(STDERR, "FAIL: $spec was ALLOWED\n"); exit(1); } catch (ImagickException $e) { if (!preg_match("/(security policy|not authoriz)/i", $e->getMessage())) { fwrite(STDERR, "FAIL: $spec threw without a policy message: " . $e->getMessage() . "\n"); exit(1); } } } unlink($f); echo "laraoci: policy verified live (memory limit and PDF/MVG/TEXT denials)\n";'
+
+# thread=1 in the policy plus this variable is a correctness fix as much as a
+# security one: OpenMP pools are per process, so twenty FPM children each
+# opening one will thrash a CPU-limited container (§3.2).
+ENV MAGICK_THREAD_LIMIT=1 \
+    MAGICK_TMPDIR=/tmp
+
 WORKDIR /var/www/html
 
 USER ${USER_NAME}
