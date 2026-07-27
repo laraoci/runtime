@@ -1,0 +1,17 @@
+version: 1
+defaults:
+  registry: ghcr.io/laraoci
+size_budgets:
+  runtime: 220
+  cli: 225
+  fpm: 235
+  builder: 500
+  queue: 225
+  scheduler: 225
+images:
+  runtime: {}
+  cli: { parent: runtime }
+  fpm: { parent: runtime }
+  builder: { parent: runtime }
+  queue: { parent: cli }
+  scheduler: { parent: cli }
