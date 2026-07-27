@@ -58,6 +58,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install yq (mikefarah)
+        run: |
+          sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
+            -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+
+      - name: Resolve identity from config/images.yml (D8)
+        id: identity
+        run: |
+          set -euo pipefail
+          {
+            echo "name=$(yq -r '.defaults.user.name' config/images.yml)"
+            echo "uid=$(yq -r '.defaults.user.uid' config/images.yml)"
+            echo "gid=$(yq -r '.defaults.user.gid' config/images.yml)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -71,5 +86,8 @@ jobs:
           build-args: |
             PHP_VERSION=${{ inputs.php }}
             DEBIAN_RELEASE=trixie
+            USER_NAME=${{ steps.identity.outputs.name }}
+            USER_UID=${{ steps.identity.outputs.uid }}
+            USER_GID=${{ steps.identity.outputs.gid }}
           cache-from: type=gha
           cache-to: type=gha,mode=${{ inputs.cache_mode }}
