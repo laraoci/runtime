@@ -234,5 +234,24 @@ USER ${USER_NAME}
 # Exec form in both (§6.2). tini is PID 1 (D9); it execs our entrypoint, which
 # execs docker-php-entrypoint, which execs the command - no wrapper is left in
 # the process tree and signals reach the real process.
+#
+# NOTE FOR M2, second carry-forward (the first is STOPSIGNAL above).
+# docker-php-entrypoint is INHERITED from the fpm base, and the fpm variant
+# prepends `php-fpm` - not `php` - when the first argument starts with a dash:
+#
+#   if [ "${1#-}" != "$1" ]; then set -- php-fpm "$@"; fi
+#
+# Verified live: `docker run <runtime> -v` reports `PHP 8.4.23 (fpm-fcgi)`,
+# where `docker run <runtime> php -v` reports `(cli)`. Correct here, because
+# this image IS fpm-based (D18). But every descendant inherits that script, so
+# in M2 `docker run laraoci/cli -v` would also start FPM.
+#
+# The fix is TWO changes that must land together, or 🧭 4 breaks:
+#   1. images/cli/Dockerfile ships its own docker-php-entrypoint prepending `php`.
+#   2. bin/entrypoint.sh's `-*) launched=php-fpm` mapping stops being true for
+#      that image and must follow, or a dash-invoked CLI command gets classified
+#      as FPM and silently enables opcache.preload - the exact per-process
+#      preload waste D14/🧭 4 exists to prevent.
+# Both need a structure-test assertion in tests/structure/cli.yaml.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/laraoci-entrypoint"]
 CMD ["php", "-v"]

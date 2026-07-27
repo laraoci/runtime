@@ -16,6 +16,10 @@ Debian package fixes and republishes dated tags. Because ImageMagick lives in
 the base layer (D13), this rebuild is not optional hygiene - it is the main
 control on the largest CVE surface in the image.
 
+> **Status:** the rebuild workflow lands in M4 (LOCI-049). Until it does, this
+> section describes the intended control rather than an active one, and no
+> images are published yet.
+>
 ## CVE triage posture
 
 - Release builds hard-gate on fixable `CRITICAL` and `HIGH` vulnerabilities.

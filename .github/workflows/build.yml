@@ -175,10 +175,14 @@ jobs:
           done
           jq . <<<"$labels"
 
-      # Both of the steps below need the image present in the local daemon, so
-      # they are gated on the build-and-load path. On a push build there is
-      # nothing to inspect locally; M4 re-does size measurement against the
-      # registry once `imagetools inspect` has something to look at.
+        # Both of the steps below need the image present in the local daemon, so
+        # they are gated on the build-and-load path. On a push build there is
+        # nothing to inspect locally; M4 re-does size measurement against the
+        # registry once `imagetools inspect` has something to look at.
+        #
+        # CONSEQUENCE, stated so it is not lost: the artifact that gets PUBLISHED
+        # is the one artifact never structure-tested. M4 must run the structure
+        # tests against the pushed digest, not only against the PR build.
       - name: Install container-structure-test
         if: ${{ inputs.structure_test && !inputs.push }}
         run: |

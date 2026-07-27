@@ -44,7 +44,9 @@ extensions:
     - zip
 
 size_budgets:
-  # Compressed MB, enforced by bin/size-check.sh (D17). CI fails on overrun.
+  # Compressed MB, measured by bin/size-check.sh (D17). ADVISORY on PRs, which
+  # run `--report` and always exit 0; the enforcing form (no --report, exit 1 on
+  # overrun) is wired into the release path in M4 per spec §9.2.
   #
   # `runtime` is MEASURED, not a guess - see docs/size-report-m1.md for the three
   # per-version numbers, the tool, the date and the host arch. Frozen per D17.

@@ -5,8 +5,9 @@ shared runtime layer, and a maintained security posture. You bring `vendor/` and
 your code; LaraOCI brings a correct PHP runtime, signal handling, logging, and
 weekly rebuilds.
 
-> **Status:** pre-release. M0 (foundations) builds the config-driven build
-> pipeline; images arrive in M1+. See `docs/laraoci-Spec.md`.
+> **Status:** pre-release. M0 (foundations) and M1 (the shared `runtime` layer)
+> are complete; `cli`, `fpm` and `builder` arrive in M2, `queue` and `scheduler`
+> in M3, and publishing, signing and scanning in M4. See `docs/laraoci-Spec.md`.
 
 ## Image catalog
 
@@ -22,17 +23,17 @@ weekly rebuilds.
 ## Repository layout
 
 - `config/images.yml` - the single source of truth; CI derives the build matrix from it.
-- `bin/` - `matrix.sh`, `affected.sh`, `size-check.sh`, and the entrypoint (M1).
-- `images/` - per-image Dockerfiles (M1+).
+- `bin/` - `matrix.sh`, `affected.sh`, `size-check.sh`, `structure-test.sh`, `fetch-tool.sh`, and the container entrypoint.
+- `images/` - per-image Dockerfiles.
 - `tests/` - bats unit tests, structure tests, smoke tests, fixtures.
 - `.github/workflows/` - `lint`, `build` (reusable), `pr`.
 
 ## Local development
 
-    tests/bats/bin/bats tests/unit          # unit tests (needs mikefarah/yq v4 + jq)
-    shellcheck -S warning bin/*.sh bin/lib/*.sh
-    shfmt -d -i 2 -ci bin
-    bin/matrix.sh | jq '.include | length'   # 36
+    tests/bats/bin/bats tests/unit                 # unit tests (needs mikefarah/yq v4 + jq)
+    shellcheck -S warning $(git ls-files '*.sh')
+    shfmt -d -i 2 -ci $(git ls-files '*.sh')
+    bin/matrix.sh | jq '.include | length'         # 36
 
 ## License
 
