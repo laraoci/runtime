@@ -50,7 +50,12 @@ jobs:
 
       - name: Compute image reference
         id: meta
-        run: echo "image_ref=ghcr.io/laraoci/${{ inputs.image }}:${{ inputs.php }}-trixie" >> "$GITHUB_OUTPUT"
+        env:
+          IMAGE: ${{ inputs.image }}
+          PHP: ${{ inputs.php }}
+        run: |
+          set -euo pipefail
+          echo "image_ref=ghcr.io/laraoci/${IMAGE}:${PHP}-trixie" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -120,14 +125,20 @@ jobs:
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.base.name=${{ steps.oci.outputs.base_name }}
             org.opencontainers.image.base.digest=${{ steps.oci.outputs.base_digest }}
+          # PR legs READ the cache but must never WRITE it: Actions cache entries
+          # written from a PR branch are restorable by workflows on the default
+          # branch, so an unmerged PR could otherwise seed layers that a later
+          # release build ships.
           cache-from: type=gha
-          cache-to: type=gha,mode=${{ inputs.cache_mode }}
+          cache-to: ${{ inputs.push && format('type=gha,mode={0}', inputs.cache_mode) || '' }}
 
       - name: Assert the required labels are present (§11)
         if: ${{ !inputs.push }}
+        env:
+          IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
           set -euo pipefail
-          labels="$(docker image inspect "${{ steps.meta.outputs.image_ref }}" --format '{{json .Config.Labels}}')"
+          labels="$(docker image inspect "$IMAGE_REF" --format '{{json .Config.Labels}}')"
           for key in source revision created version licenses description documentation base.name base.digest; do
             jq -e --arg k "org.opencontainers.image.$key" '.[$k] | length > 0' >/dev/null <<<"$labels" \
               || { echo "missing label org.opencontainers.image.$key" >&2; exit 1; }
@@ -148,10 +159,18 @@ jobs:
       # yet, so M2 and M3 gain coverage by adding a file rather than editing CI.
       - name: Structure tests (§10.1)
         if: ${{ inputs.structure_test && !inputs.push }}
-        run: bin/structure-test.sh --image "${{ inputs.image }}" --ref "${{ steps.meta.outputs.image_ref }}"
+        env:
+          IMAGE: ${{ inputs.image }}
+          IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          bin/structure-test.sh --image "$IMAGE" --ref "$IMAGE_REF"
 
       - name: Size report (D17, advisory on PRs)
         if: ${{ !inputs.push }}
         env:
+          IMAGE: ${{ inputs.image }}
           LARAOCI_TAG: ${{ inputs.php }}-trixie
-        run: bin/size-check.sh --image "${{ inputs.image }}" --report | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          set -euo pipefail
+          bin/size-check.sh --image "$IMAGE" --report | tee -a "$GITHUB_STEP_SUMMARY"

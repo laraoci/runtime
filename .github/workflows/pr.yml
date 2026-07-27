@@ -5,7 +5,12 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+# Consecutive pushes to a PR otherwise run overlapping full matrices; at M4's
+# 36 legs that is the single largest avoidable CI cost.
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   matrix:
@@ -26,8 +31,10 @@ jobs:
 
       - name: Resolve affected images and build the amd64 matrix
         id: gen
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          base="origin/${{ github.base_ref }}"
+          base="origin/${BASE_REF}"
           mapfile -t images < <(bin/affected.sh --base "$base")
           if [[ ${#images[@]} -eq 0 ]]; then
             echo 'legs={"include":[]}' >> "$GITHUB_OUTPUT"
