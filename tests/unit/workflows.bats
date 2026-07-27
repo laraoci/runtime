@@ -65,3 +65,12 @@ run_bodies() {
   [ "$output" -eq 0 ]
 }
 
+@test "workflows: build.yml guards the load path against a multi-platform list (M7)" {
+  # BuildKit cannot load a manifest list into the Docker daemon; the reusable
+  # workflow accepts a comma-separated list, so the combination must fail fast.
+  run yq -r '[.jobs.build.steps[] | select((.run // "") | test("cannot be loaded|manifest list"))] | length' \
+    .github/workflows/build.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+

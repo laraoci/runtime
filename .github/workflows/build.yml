@@ -12,6 +12,10 @@ on:
       platforms:
         required: true
         type: string
+        description: >-
+          Comma-separated buildx platform list. When push is false the result is
+          loaded into the local Docker daemon, which supports exactly ONE
+          platform - pass a single value on that path. Enforced below.
       push:
         required: false
         type: boolean
@@ -104,6 +108,20 @@ jobs:
             echo "description=$(yq -r ".images.\"${IMAGE}\".description" config/images.yml)"
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Reject a multi-platform build that cannot be loaded
+        if: ${{ !inputs.push }}
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORMS" in
+            *,*)
+              echo "::error::platforms='${PLATFORMS}' with push=false. BuildKit cannot load a manifest list into the Docker daemon, so this leg would fail inside the build action with an opaque exporter error. Call this workflow with one platform per leg, or set push=true." >&2
+              exit 1
+              ;;
+          esac
+          echo "single platform '${PLATFORMS}' - safe to load"
 
       - name: Build
         id: build
