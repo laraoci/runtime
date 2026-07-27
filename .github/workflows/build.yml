@@ -23,7 +23,6 @@ on:
       dockerfile:
         required: true
         type: string
-        default: tests/stub/Dockerfile
     outputs:
       image_ref:
         description: Fully-qualified image reference
@@ -41,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
-      digest: ${{ steps.build.outputs.image_ref }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -55,7 +54,7 @@ jobs:
         if: ${{ inputs.push }}
         uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
         with:
-          registry: ghcr.ip
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
