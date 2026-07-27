@@ -74,6 +74,10 @@ PHP versions, Debian releases, extension sets, and image types live in `config/i
 | **D16** | **FrankenPHP** is the first post-v1 variant, and is permitted a **second root layer**    | It is a SAPI, not a bolted-on web server (§3.3)                                                            |
 | **D17** | CI enforces a **per-image size budget**                                                  | Makes "lightweight" a testable claim rather than an aspiration                                             |
 | **D18** | `runtime` derives from the **`-fpm` upstream variant**, not `-cli`                       | The only way the single-root graph is actually achievable; the fpm variant ships the CLI binary too (§3.4) |
+| **D19** | `install-php-extensions` is pinned by **digest**, not by tag                             | Determinism in the one layer that decides the whole extension surface; Renovate keeps it current (§2.4)    |
+| **D20** | The LaraOCI entrypoint **chains** `docker-php-entrypoint` rather than replacing it       | Preserves upstream's leading-`-` argument fixup for free and reimplements nothing (§6.2)                   |
+| **D21** | `procps` is **not** installed in any image                                               | One process per container makes `ps` near-useless; `kubectl debug` covers incidents (§7.1)                 |
+| **D22** | Preload is gated on the **SAPI** by the entrypoint, written to a separate ini            | CLI opcache is per-process, so preload taxes every `php artisan` call and persists nothing (§7.7)          |
 
 ### 3.4 Why `runtime` uses the `-fpm` upstream variant (D18)
 
@@ -106,7 +110,7 @@ Current upstream patch levels at time of writing: 8.3.32, 8.4.23, 8.5.8. An 8.6 
 
 Including imagick is a real cost, stated plainly:
 
-- **Size:** ImageMagick core plus delegates adds an estimated **70–100 MB**. Much of the delegate set (libjpeg, libpng, libwebp, libfreetype) is already present for `gd`, so the net figure is the number to measure, not the package total. This is roughly a 50–70% increase over a gd-only runtime. M1 measures it; D17 then freezes it.
+- **Size:** ImageMagick core plus delegates adds an estimated **70–100 MB**. Much of the delegate set (libjpeg, libpng, libwebp, libfreetype) is already present for `gd`, so the net figure is the number to measure, not the package total. **Measured and frozen in M1:** `runtime` compresses to 227.6 / 230.5 / 232.6 MB on 8.3 / 8.4 / 8.5, and `size_budgets.runtime` is committed at **260 MB** (max + 10% headroom, rounded to 5). See `docs/size-report-m1.md` for the method, the tool, and the host arch; growth is monotonic with the PHP minor, so 8.5 sets the budget.
 - **CVE surface:** ImageMagick has the heaviest vulnerability history of anything in the image.
 
 Both are mitigated rather than accepted:
@@ -118,7 +122,11 @@ Two facts make this a build step rather than an omission:
 1. `install-php-extensions imagick` **installs `ghostscript` unconditionally on Debian** and marks it persistent. `--no-install-recommends` does not prevent this; the installer names the package directly.
 2. Ghostscript is only a **Recommends** of `libmagickcore-7.q16-*`, never a Depends. Nothing breaks when it goes.
 
-So the runtime image purges it explicitly after the extension install, and `--auto-remove` reclaims its orphaned tree (`libgs*`, `poppler-data`, `fonts-urw-base35`) - several tens of megabytes back. The purge is a hard step with no `|| true`, and a structure test asserts `gs` is absent, so a future installer change that reorders things fails the build loudly instead of silently reintroducing the interpreter.
+So the runtime image purges it explicitly after the extension install. The purge is a hard step with no `|| true`, and a structure test asserts `gs` is absent, so a future installer change that reorders things fails the build loudly instead of silently reintroducing the interpreter.
+
+**`--auto-remove` does not reclaim the tree - M1 disproved that.** The installer marks everything it pulls in as *manually* installed, and `--auto-remove` only reclaims *auto*-marked packages: `apt-get purge -y --auto-remove ghostscript` on its own frees **187 kB** and leaves the rest in place. Every package must be named: `ghostscript`, `libgs10`, `libgs10-common`, `libgs-common`, `poppler-data` - **38.1 MB installed**, measured. `fonts-urw-base35` is deliberately **retained**, contrary to the earlier wording here: it is a Recommends of `libmagickcore-7.q16-10`, i.e. ImageMagick's standard PostScript-35 font set, not Ghostscript baggage, and removing it silently breaks text annotation for anyone who does not name a font explicitly.
+
+The purge and its assertions live in the **same `RUN`** as the extension install. Docker layers are additive, so a purge in a later instruction removes the files from the final filesystem while leaving their bytes in the earlier layer's tarball - an image that passes `command -v gs` and still ships the interpreter.
 
 PDF rasterisation is explicitly out of scope (§14). An application that needs it installs Ghostscript in its own layer, consciously.
 
@@ -152,9 +160,11 @@ PDF rasterisation is explicitly out of scope (§14). An application that needs i
 
 **The image contains no ImageMagick CLI tools.** Only the libraries are installed, so `identify`, `convert`, and `magick` do not exist. Policy assertions must go through PHP (§10.1), not through `identify -list policy`.
 
-**The `-extra` codec package is unavoidable** via this installer path. It brings DjVu, WMF, OpenEXR, and RAW decoders - more size and more parser surface than a Laravel app typically needs. The delegate denial blunts the worst of it, and the weekly rebuild (§9.3) is the ongoing control. If this proves to be the bulk of the size overrun in M1, hand-rolling the apt install to skip `-extra` is the escape hatch.
+**The `-extra` codec package is unavoidable** via this installer path. It brings DjVu, WMF, OpenEXR, and RAW decoders - more parser surface than a Laravel app typically needs. The delegate denial blunts the worst of it, and the weekly rebuild (§9.3) is the ongoing control.
 
-**Escape hatch if size becomes a complaint:** publish `-slim` variants without imagick rather than reversing the default. That reopens the matrix, so it happens on evidence, not speculation.
+**The size half of that argument does not survive measurement.** M1 built the image twice, identical but for the package, and the delta was **0.08 MB compressed**: `libmagickcore-7.q16-10-extra` is a 295 KB shim of coder modules. The decoders arrive as its dependencies and survive `--auto-remove` for the same reason the Ghostscript tree did, so reclaiming them means naming them - `libopenexr-3-1-30`, `libdjvulibre21`, `libdjvulibre-text`, `libwmflite-0.2-7`, **8.7 MB installed** between them. A wider sweep that also takes decoders owned by ImageMagick *core* (`libraw23t64`, `libheif1`, `libopenjp2-7`, the libheif plugins) reaches 13.5 MB installed, but those are not `-extra`'s to give back. The 70–100 MB imagick costs is ImageMagick proper. Hand-rolling the apt install to skip `-extra` is therefore **not** a size escape hatch; if it happens it is a parser-surface argument.
+
+**Escape hatch if size becomes a complaint:** publish `-slim` variants without imagick rather than reversing the default. That reopens the matrix, so it happens on evidence, not speculation - and per the numbers above, `-slim` (LOCI-056) must be argued on CVE and parser surface, with those figures stated so nobody expects a size win.
 
 ### 3.3 Why FrankenPHP gets a second root (D16)
 
@@ -231,7 +241,7 @@ extensions:
     - zip
 
 size_budgets:          # compressed, MB - enforced by D17
-  runtime: 220
+  runtime: 260         # MEASURED in M1 - the 220 shown in the v2 draft was already too low
   cli: 225
   fpm: 235
   builder: 500
@@ -260,7 +270,7 @@ images:
 - Exactly one PHP version carries `default: true`. It backs `:latest`.
 - `php.<version>.debian` overrides `defaults.debian` - the transition mechanism of §3.1, unset in normal operation.
 - `images.<name>.parent` defines build order. CI topologically sorts; no hand-maintained ordering.
-- `size_budgets` values are provisional until M1 measures reality. CI fails on exceeding them.
+- `size_budgets` are frozen against measurement, one milestone at a time. CI fails on exceeding them. `runtime` was measured and frozen in M1 (§3.2, `docs/size-report-m1.md`); `cli`/`fpm`/`builder` are still provisional until M2 and `queue`/`scheduler` until M3. Those five are known to be *below* `runtime`, which they descend from, so they fail the moment those images build - deliberately, as the reminder to measure.
 
 Matrix size: 3 PHP × 6 images × 2 arches = **36 build legs** per release. Development builds cut this to affected images on amd64 only.
 
@@ -570,6 +580,7 @@ fwrite(STDERR, sprintf(
 
 Constraints documented alongside it:
 
+- **Preload is FPM-only by default (D22).** Setting `PHP_OPCACHE_PRELOAD` is necessary but not sufficient: the entrypoint writes the `opcache.preload` directive into `zz-laraoci-preload.ini` only when the launched command is `php-fpm`. CLI opcache is per-process - the shared segment is created at startup and destroyed at exit - so on `cli` every `php artisan` call would pay the full preload compile cost and discard the result. Long-lived CLI workers that genuinely benefit, `queue` above all, opt in with **`LARAOCI_PRELOAD_FORCE=1`**. A stale directive from a previous start is cleared on the next one, so a container that stops qualifying does not keep preloading. `opcache.enable_cli` stays `1` regardless (§6.5) - that is what makes queue workers worth the opt-in.
 - **Requires `vendor/` to exist at container start.** With an empty root the script no-ops and logs zero - silent, not fatal, by design.
 - **Requires a container restart to change anything preloaded.** Consistent with `validate_timestamps = 0`.
 - **Costs opcache memory.** Preloaded entries count against `opcache.memory_consumption`; the documented pairing raises it to 320 MB. `max_accelerated_files` must exceed the preloaded file count.
@@ -742,9 +753,8 @@ Two deliberate exceptions, both argued rather than assumed: the `builder` image 
 
 ## 17. Remaining Open Questions
 
-Questions 1–3 of the v2 draft are closed against primary sources and folded into §3.1, §3.2, and §7.1. What is left is genuinely unresolvable from a desk.
+Questions 1–3 of the v2 draft are closed against primary sources and folded into §3.1, §3.2, and §7.1. Questions 1 and 3 of the v3 list - the `runtime` size budget and the `libmagickcore-*-extra` scope - are closed against **M1 measurement** and folded into §3.2 and §5; the numbers and method live in `docs/size-report-m1.md`. What is left is genuinely unresolvable from a desk.
 
-1. **Size budgets (§5).** The values are placeholders. M1 measures `runtime` on all three versions and freezes D17. The specific thing to watch is how much of the overrun is `libmagickcore-*-extra` rather than ImageMagick proper - that determines whether the hand-rolled apt install becomes necessary, and it is the input to the `-slim` variant decision.
-2. **Ghostscript purge durability.** The purge depends on `install-php-extensions` continuing to install Ghostscript as a normal package rather than pinning or holding it. The structure test catches a regression, but the failure would surface as a red build on an unrelated PR. Worth an upstream issue asking whether Ghostscript can be made opt-out.
-3. **`libmagickcore-*-extra` scope.** DjVu, WMF, OpenEXR, and RAW decoders are parser surface no Laravel app asked for. Deferred to M1 evidence rather than pre-emptively engineered around.
-4. **PHP 8.6.** An alpha is already built upstream with full trixie coverage. Confirm the intent to add it at GA as a fourth `supported` version - which takes the release matrix from 36 legs to 48 and makes the affected-images filter (§9.1) load-bearing rather than a nicety.
+1. **Ghostscript purge durability.** The purge depends on `install-php-extensions` continuing to install Ghostscript as a normal package rather than pinning or holding it. M1 made this sharper, not softer: because the tree must be named explicitly (§3.2), a rename such as `libgs10` → `libgs11` breaks the build rather than silently leaving the interpreter behind - loud, but on an unrelated PR. The structure test is the backstop. Still worth an upstream issue asking whether Ghostscript can be made opt-out.
+2. **PHP 8.6.** An alpha is already built upstream with full trixie coverage. Confirm the intent to add it at GA as a fourth `supported` version - which takes the release matrix from 36 legs to 48 and makes the affected-images filter (§9.1) load-bearing rather than a nicety.
+3. **Budgets for the other five images.** `runtime` is frozen; `cli`, `fpm`, `builder`, `queue`, and `scheduler` still carry v2-draft placeholders that sit *below* their own parent. M2 and M3 measure and freeze them the same way. Not a desk question either - it needs the images to exist.
