@@ -40,3 +40,20 @@ run_bodies() {
   run yq -r '.concurrency."cancel-in-progress"' .github/workflows/pr.yml
   [ "$output" = "true" ]
 }
+
+@test "workflows: every multi-line run: body sets -euo pipefail (M3)" {
+  local f out
+  for f in .github/workflows/*.yml; do
+    out="$(yq -r '
+      .jobs[].steps[]
+      | select(has("run"))
+      | select(.run | contains("\n"))
+      | select(.run | test("set -euo pipefail") | not)
+      | .name // "<unnamed step>"' "$f")"
+    if [ -n "$out" ]; then
+      echo "$f has multi-line run: steps that do not set -euo pipefail:" >&2
+      echo "$out" >&2
+      false
+    fi
+  done
+}

@@ -25,6 +25,7 @@ jobs:
 
       - name: Install yq (mikefarah) and jq
         run: |
+          set -euo pipefail
           sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
             -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
           sudo apt-get update && sudo apt-get install -y jq
@@ -34,13 +35,26 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
+          set -euo pipefail
           base="origin/${BASE_REF}"
-          mapfile -t images < <(bin/affected.sh --base "$base")
+
+          # A plain assignment from a command substitution DOES trip errexit,
+          # where `mapfile < <(...)` does not - so a failure in affected.sh can
+          # no longer be reported as "nothing to build" (M3).
+          affected_out="$(bin/affected.sh --base "$base")"
+
+          images=()
+          if [[ -n "$affected_out" ]]; then
+            mapfile -t images <<<"$affected_out"
+          fi
+
           if [[ ${#images[@]} -eq 0 ]]; then
+            echo "::notice::no image is affected by this diff"
             echo 'legs={"include":[]}' >> "$GITHUB_OUTPUT"
             echo 'count=0' >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           # matrix.sh takes a single --image; run it per image and merge.
           # An image whose Dockerfile does not exist yet is skipped rather than
           # failing the leg: M1 ships only runtime, and M2/M3 pick their images
