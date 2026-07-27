@@ -74,6 +74,7 @@ for php in "${php_versions[@]}"; do
   [[ -n "$php_filter" && "$php" != "$php_filter" ]] && continue
   for img in "${sorted[@]}"; do
     [[ -n "$image_filter" && "$img" != "$image_filter" ]] && continue
+    dockerfile="$(yq -r ".images.\"$img\".dockerfile // \"\"" "$CONFIG")"
     mapfile -t platforms < <(
       yq -r ".images.\"$img\".platforms // .defaults.platforms | .[]" "$CONFIG"
     )
@@ -81,7 +82,8 @@ for php in "${php_versions[@]}"; do
       [[ -n "$platform_filter" && "$plat" != "$platform_filter" ]] && continue
       legs+=("$(jq -nc \
         --arg php "$php" --arg image "$img" --arg platform "$plat" \
-        '{php: $php, image: $image, platform: $platform}')")
+        --arg dockerfile "$dockerfile" \
+        '{php: $php, image: $image, platform: $platform, dockerfile: $dockerfile}')")
     done
   done
 done

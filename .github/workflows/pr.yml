@@ -34,11 +34,17 @@ jobs:
             echo 'count=0' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          args=()
-          for img in "${images[@]}"; do args+=(--image "$img"); done
           # matrix.sh takes a single --image; run it per image and merge.
+          # An image whose Dockerfile does not exist yet is skipped rather than
+          # failing the leg: M1 ships only runtime, and M2/M3 pick their images
+          # up here simply by adding the file.
           merged='{"include":[]}'
           for img in "${images[@]}"; do
+            df="$(yq -r ".images.\"$img\".dockerfile" config/images.yml)"
+            if [[ ! -f "$df" ]]; then
+              echo "::notice::skipping $img - $df does not exist yet"
+              continue
+            fi
             leg="$(bin/matrix.sh --image "$img" --platform linux/amd64)"
             merged="$(jq -c --argjson a "$merged" --argjson b "$leg" \
               '{include: ($a.include + $b.include)}' <<<'{}')"
@@ -61,7 +67,7 @@ jobs:
       platforms: ${{ matrix.platform }}
       push: false
       cache_mode: max
-      dockerfile: tests/stub/Dockerfile
+      dockerfile: ${{ matrix.dockerfile }}
 
   size:
     needs: matrix

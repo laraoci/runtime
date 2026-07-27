@@ -3,3 +3,8 @@
 .DS_Store
 /tmp/
 /.idea/
+/docs/superpowers
+/docs/laraoci-issues.md
+/docs/m0-foundations.md
+/docs/m1-runtime.md
+/docs/seed-issues.sh
