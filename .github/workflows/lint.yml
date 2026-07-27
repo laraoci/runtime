@@ -43,7 +43,7 @@ jobs:
         run: |
           sudo curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 \
             -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
-          sudo apt-get update && sudo apt-get install -y jq
+          sudo apt-get update && sudo apt-get install -y jq gettext-base
       - name: Run unit tests
         run: tests/bats/bin/bats tests/unit
 

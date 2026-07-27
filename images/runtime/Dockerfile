@@ -56,12 +56,19 @@ COPY --from=mlocati/php-extension-installer:2@sha256:b6d3fa381b9ba5cf051117c1c60
 # SC2016 is suppressed deliberately: `$e` below is a PHP variable, and the
 # single quotes are what stop the shell from expanding it before PHP sees it.
 # Double quotes here would be the bug the rule thinks it is preventing.
-# hadolint ignore=SC2016
+#
+# DL3008 (pin apt versions) is suppressed deliberately too. Pinning against
+# moving Debian mirrors contradicts §2.4 - LaraOCI claims immutability and
+# verifiability, not bit reproducibility - and a pinned version would break the
+# weekly rebuild (§9.3) the moment Debian publishes a security update, which is
+# the one mechanism that keeps these images safe.
+# hadolint ignore=DL3008,SC2016
 RUN set -eux; \
     install-php-extensions \
       bcmath exif gd imagick intl opcache pcntl \
       pdo_mysql pdo_pgsql redis sockets zip; \
     apt-get update; \
+    apt-get install -y --no-install-recommends gettext-base; \
     apt-get purge -y --auto-remove \
       ghostscript libgs10 libgs10-common libgs-common poppler-data; \
     if command -v gs >/dev/null 2>&1; then echo "FAIL: gs is still on PATH" >&2; exit 1; fi; \
@@ -73,6 +80,7 @@ RUN set -eux; \
     esac; \
     php -r 'foreach (["pcntl", "posix", "imagick"] as $e) { if (!extension_loaded($e)) { fwrite(STDERR, "FAIL: extension $e is not loaded\n"); exit(1); } }'; \
     php -r '$f = array_map("strtoupper", Imagick::queryFormats()); foreach (["JPEG","PNG","WEBP"] as $x) { if (!in_array($x, $f, true)) { fwrite(STDERR, "FAIL: imagick lost $x\n"); exit(1); } }'; \
+    test -x /usr/bin/envsubst; \
     rm -rf /var/lib/apt/lists/* /usr/local/bin/install-php-extensions
 
 # ---------------------------------------------------------------------------
@@ -149,6 +157,7 @@ RUN set -eux; \
     php -r '$f = "/tmp/laraoci-policy-check"; file_put_contents($f, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n"); $mem = (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY); if ($mem !== 256 * 1048576) { fwrite(STDERR, "FAIL: policy.xml was not parsed - memory limit is $mem, expected " . (256 * 1048576) . "\n"); exit(1); } foreach (["PDF:$f", "MVG:$f", "TEXT:$f"] as $spec) { try { (new Imagick())->readImage($spec); fwrite(STDERR, "FAIL: $spec was ALLOWED\n"); exit(1); } catch (ImagickException $e) { if (!preg_match("/(security policy|not authoriz)/i", $e->getMessage())) { fwrite(STDERR, "FAIL: $spec threw without a policy message: " . $e->getMessage() . "\n"); exit(1); } } } unlink($f); echo "laraoci: policy verified live (memory limit and PDF/MVG/TEXT denials)\n";'
 
 COPY --chmod=0644 config/php/zz-laraoci.ini.template /usr/local/share/laraoci/templates/
+COPY --chmod=0755 bin/entrypoint.sh /usr/local/bin/laraoci-entrypoint
 
 # The §6.4 defaults live here and nowhere else: visible to `docker inspect`,
 # inherited by every descendant, and overridable per container. The entrypoint
@@ -174,6 +183,30 @@ ENV PHP_MEMORY_LIMIT=256M \
     PHP_OPCACHE_MAX_ACCELERATED_FILES=20000 \
     MAGICK_THREAD_LIMIT=1 \
     MAGICK_TMPDIR=/tmp
+
+# ---------------------------------------------------------------------------
+# RUN 4 - BOUNDARY: must come after the ENV defaults and after the entrypoint
+# is in place, because it renders through the entrypoint itself.
+#
+# $PHP_INI_DIR/conf.d is root-owned and the container runs as ${USER_NAME}, so
+# the two rendered files are pre-created with ${USER_NAME} ownership. That gives
+# the entrypoint write access to exactly two files and to nothing else in the
+# directory - it cannot touch docker-php-ext-*.ini.
+#
+# Rendering here (by invoking the real entrypoint, so there is no second copy of
+# the logic) means a template that cannot render fails the BUILD, and an image
+# started with --entrypoint or on a read-only rootfs still carries the baseline.
+#
+# The checks read ini values through PHP rather than grepping `php -i`, which
+# keeps the instruction pipe-free. Note the two shapes of a falsey boolean ini:
+# expose_php reads back as '' while opcache.validate_timestamps reads back as
+# '0', so both go through FILTER_VALIDATE_BOOLEAN instead of a string compare.
+# hadolint ignore=SC2016
+RUN set -eux; \
+    install -o "${USER_UID}" -g "${USER_GID}" -m 0644 /dev/null "${PHP_INI_DIR}/conf.d/zz-laraoci.ini"; \
+    install -o "${USER_UID}" -g "${USER_GID}" -m 0644 /dev/null "${PHP_INI_DIR}/conf.d/zz-laraoci-preload.ini"; \
+    /usr/local/bin/laraoci-entrypoint true; \
+    php -r '$bad = []; if (filter_var(ini_get("expose_php"), FILTER_VALIDATE_BOOLEAN)) { $bad[] = "expose_php is On"; } if (filter_var(ini_get("opcache.validate_timestamps"), FILTER_VALIDATE_BOOLEAN)) { $bad[] = "opcache.validate_timestamps is On"; } if (ini_get("memory_limit") !== "256M") { $bad[] = "memory_limit is " . var_export(ini_get("memory_limit"), true); } if (ini_get("opcache.jit") !== "disable") { $bad[] = "opcache.jit is " . var_export(ini_get("opcache.jit"), true); } if ($bad) { fwrite(STDERR, "FAIL: rendered ini is wrong: " . implode("; ", $bad) . "\n"); exit(1); }'
 
 WORKDIR /var/www/html
 
