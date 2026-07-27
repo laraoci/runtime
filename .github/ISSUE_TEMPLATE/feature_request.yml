@@ -1,0 +1,17 @@
+name: Feature request
+description: Propose a change, weighed against the non-goals in spec §14
+labels: ["type:infra"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: If it is `cli` plus a CMD, say so - it may be a thin derivative, not an image (D4).
+    validations:
+      required: true

@@ -1,0 +1,24 @@
+name: Bug report
+description: Something in a LaraOCI image or script is wrong
+labels: ["type:infra"]
+body:
+  - type: input
+    id: image
+    attributes:
+      label: Image and tag
+      placeholder: ghcr.io/laraoci/fpm:8.4-trixie
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Commands, docker run invocation, or compose snippet.
+    validations:
+      required: true
