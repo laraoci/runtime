@@ -44,43 +44,22 @@ mapfile -t php_versions < <(
   yq -r '.php | to_entries | .[] | select(.value.status != "deprecated") | .key' "$CONFIG"
 )
 
-# Image names and their parents.
-mapfile -t image_names < <(yq -r '.images | keys | .[]' "$CONFIG")
-declare -A parent=()
-for img in "${image_names[@]}"; do
-  parent["$img"]="$(yq -r ".images.\"$img\".parent // \"\"" "$CONFIG")"
-done
+read_image_graph
 
-# Topological sort by parent (Kahn-style): emit an image once its parent has
-# been emitted. Build order must never be hand-maintained.
-sorted=()
-declare -A emitted=()
-while ((${#sorted[@]} < ${#image_names[@]})); do
-  progress=0
-  for img in "${image_names[@]}"; do
-    [[ -n "${emitted[$img]:-}" ]] && continue
-    p="${parent[$img]}"
-    if [[ -z "$p" || -n "${emitted[$p]:-}" ]]; then
-      sorted+=("$img")
-      emitted["$img"]=1
-      progress=1
-    fi
-  done
-  ((progress)) || {
-    echo "error: cycle or dangling parent in images graph" >&2
-    exit 1
-  }
-done
+# Platform defaults are read once; a per-image override arrives in the graph.
+mapfile -t default_platforms < <(yq -r '.defaults.platforms | .[]' "$CONFIG")
 
 legs=()
 for php in "${php_versions[@]}"; do
   [[ -n "$php_filter" && "$php" != "$php_filter" ]] && continue
-  for img in "${sorted[@]}"; do
+  for img in "${IMAGE_ORDER[@]}"; do
     [[ -n "$image_filter" && "$img" != "$image_filter" ]] && continue
-    dockerfile="$(yq -r ".images.\"$img\".dockerfile // \"\"" "$CONFIG")"
-    mapfile -t platforms < <(
-      yq -r ".images.\"$img\".platforms // .defaults.platforms | .[]" "$CONFIG"
-    )
+    dockerfile="${IMAGE_DOCKERFILE[$img]}"
+    if [[ -n "${IMAGE_PLATFORMS[$img]}" ]]; then
+      IFS=',' read -r -a platforms <<<"${IMAGE_PLATFORMS[$img]}"
+    else
+      platforms=("${default_platforms[@]}")
+    fi
     for plat in "${platforms[@]}"; do
       [[ -n "$platform_filter" && "$plat" != "$platform_filter" ]] && continue
       legs+=("$(jq -nc \
