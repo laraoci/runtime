@@ -39,10 +39,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Supported (non-deprecated) PHP versions, in file order.
-mapfile -t php_versions < <(
-  yq -r '.php | to_entries | .[] | select(.value.status != "deprecated") | .key' "$CONFIG"
-)
+# Supported (non-deprecated) PHP versions, in file order, each with the Debian
+# suite it builds against. A per-version `debian:` key overrides defaults.debian
+# - the §3.1 transition mechanism, unset in normal operation (spec §271).
+default_debian="$(yq -r '.defaults.debian' "$CONFIG")"
+php_versions=()
+declare -A php_debian=()
+# One field per line, two reads per record - the same idiom as
+# read_image_graph, and for the same reason. `@tsv` with IFS=$'\t' would work
+# here today only by accident: the empty field is the LAST one and read strips
+# trailing IFS whitespace. Add a third column, or reorder these two, and
+# adjacent-tab collapsing silently shifts every value one slot left.
+while IFS= read -r v && IFS= read -r d; do
+  [[ -z "$v" ]] && continue
+  php_versions+=("$v")
+  if [[ -n "$d" ]]; then
+    php_debian["$v"]="$d"
+  else
+    php_debian["$v"]="$default_debian"
+  fi
+done < <(yq -r '
+  .php | to_entries | .[]
+  | select(.value.status != "deprecated")
+  | [.key, (.value.debian // "")]
+  | .[]' "$CONFIG")
 
 read_image_graph
 
@@ -52,6 +72,7 @@ mapfile -t default_platforms < <(yq -r '.defaults.platforms | .[]' "$CONFIG")
 legs=()
 for php in "${php_versions[@]}"; do
   [[ -n "$php_filter" && "$php" != "$php_filter" ]] && continue
+  debian="${php_debian[$php]}"
   for img in "${IMAGE_ORDER[@]}"; do
     [[ -n "$image_filter" && "$img" != "$image_filter" ]] && continue
     dockerfile="${IMAGE_DOCKERFILE[$img]}"
@@ -64,8 +85,8 @@ for php in "${php_versions[@]}"; do
       [[ -n "$platform_filter" && "$plat" != "$platform_filter" ]] && continue
       legs+=("$(jq -nc \
         --arg php "$php" --arg image "$img" --arg platform "$plat" \
-        --arg dockerfile "$dockerfile" \
-        '{php: $php, image: $image, platform: $platform, dockerfile: $dockerfile}')")
+        --arg dockerfile "$dockerfile" --arg debian "$debian" \
+        '{php: $php, image: $image, platform: $platform, dockerfile: $dockerfile, debian: $debian}')")
     done
   done
 done

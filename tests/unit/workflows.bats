@@ -57,3 +57,11 @@ run_bodies() {
     fi
   done
 }
+
+@test "workflows: the debian suite is never hardcoded in build.yml (M2)" {
+  # Five hardcoded 'trixie' literals used to make config/images.yml's documented
+  # per-version override silently inert.
+  run grep -c 'trixie' .github/workflows/build.yml
+  [ "$output" -eq 0 ]
+}
+

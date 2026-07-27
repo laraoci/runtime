@@ -89,4 +89,5 @@ jobs:
       push: false
       cache_mode: max
       dockerfile: ${{ matrix.dockerfile }}
+      debian: ${{ matrix.debian }}
       structure_test: true

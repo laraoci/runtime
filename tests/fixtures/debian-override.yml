@@ -1,0 +1,12 @@
+version: 1
+defaults:
+  registry: ghcr.io/laraoci
+  debian: trixie
+  platforms: [linux/amd64]
+php:
+  # The §3.1 transition mechanism: one version held on the older suite.
+  "8.3": { status: supported, debian: bookworm }
+  "8.4": { status: supported, default: true }
+size_budgets: { runtime: 1 }
+images:
+  runtime: { dockerfile: images/runtime/Dockerfile }

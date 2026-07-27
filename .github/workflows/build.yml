@@ -23,6 +23,10 @@ on:
       dockerfile:
         required: true
         type: string
+      debian:
+        required: true
+        type: string
+        description: Debian suite for this leg, resolved from config/images.yml by bin/matrix.sh.
       structure_test:
         required: false
         type: boolean
@@ -53,9 +57,10 @@ jobs:
         env:
           IMAGE: ${{ inputs.image }}
           PHP: ${{ inputs.php }}
+          DEBIAN: ${{ inputs.debian }}
         run: |
           set -euo pipefail
-          echo "image_ref=ghcr.io/laraoci/${IMAGE}:${PHP}-trixie" >> "$GITHUB_OUTPUT"
+          echo "image_ref=ghcr.io/laraoci/${IMAGE}:${PHP}-${DEBIAN}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -88,9 +93,10 @@ jobs:
         env:
           IMAGE: ${{ inputs.image }}
           PHP: ${{ inputs.php }}
+          DEBIAN: ${{ inputs.debian }}
         run: |
           set -euo pipefail
-          base="php:${PHP}-fpm-trixie"
+          base="php:${PHP}-fpm-${DEBIAN}"
           digest="$(docker buildx imagetools inspect "$base" --format '{{.Manifest.Digest}}')"
           {
             echo "base_name=docker.io/library/${base}"
@@ -111,7 +117,7 @@ jobs:
           tags: ${{ steps.meta.outputs.image_ref }}
           build-args: |
             PHP_VERSION=${{ inputs.php }}
-            DEBIAN_RELEASE=trixie
+            DEBIAN_RELEASE=${{ inputs.debian }}
             USER_NAME=${{ steps.identity.outputs.name }}
             USER_UID=${{ steps.identity.outputs.uid }}
             USER_GID=${{ steps.identity.outputs.gid }}
@@ -122,7 +128,7 @@ jobs:
             org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ steps.oci.outputs.created }}
-            org.opencontainers.image.version=${{ inputs.php }}-trixie
+            org.opencontainers.image.version=${{ inputs.php }}-${{ inputs.debian }}
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.base.name=${{ steps.oci.outputs.base_name }}
             org.opencontainers.image.base.digest=${{ steps.oci.outputs.base_digest }}
@@ -172,7 +178,7 @@ jobs:
         if: ${{ !inputs.push }}
         env:
           IMAGE: ${{ inputs.image }}
-          LARAOCI_TAG: ${{ inputs.php }}-trixie
+          LARAOCI_TAG: ${{ inputs.php }}-${{ inputs.debian }}
         run: |
           set -euo pipefail
           bin/size-check.sh --image "$IMAGE" --report | tee -a "$GITHUB_STEP_SUMMARY"
