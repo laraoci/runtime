@@ -1,0 +1,20 @@
+# Everything a smoke run produces. The fixture is a SOURCE tree: `composer
+# install` and `npm run build` are steps the suite performs and asserts on
+# (LOCI-029), so their output must never be committed - a committed public/build
+# would make the "the asset was built" assertion pass without vite running.
+/vendor
+/node_modules
+/public/build
+
+# The sqlite file is created by `artisan migrate` inside the container, owned
+# 1000:1000. Committing it would also commit whatever the last local run left in
+# the jobs table.
+*.sqlite
+*.sqlite-journal
+
+# The fixture is configured entirely through the environment the compose stack
+# passes in (LOCI-030 depends on that: a .env file would satisfy env() without
+# the container's environment ever being consulted, which is the exact bug
+# clear_env = no exists to prevent).
+.env
+.env.*
