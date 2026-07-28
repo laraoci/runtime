@@ -14,8 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - name: Install tools
         run: |
           set -euo pipefail
@@ -46,19 +44,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - name: Install gettext-base
         run: sudo apt-get update && sudo apt-get install -y gettext-base
       - name: Run unit tests
-        run: tests/bats/bin/bats tests/unit
+        run: |
+          set -euo pipefail
+          bats_bin="$(bin/fetch-bats.sh --path)"
+          "$bats_bin" tests/unit
 
   dockerfiles:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - name: Install hadolint
         run: |
           set -euo pipefail
@@ -71,9 +68,6 @@ jobs:
       - name: hadolint
         run: |
           set -euo pipefail
-          # tests/bats is a vendored submodule. Its Dockerfiles are third-party
-          # code and hadolint fails on them; this job only passed in CI because
-          # its checkout happened to omit submodules (M6).
-          find images tests -path tests/bats -prune -o \
+          find images tests \
             \( -name 'Dockerfile' -o -name '*.Dockerfile' \) -print0 \
             | xargs -0 -r hadolint

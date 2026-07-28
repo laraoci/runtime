@@ -135,3 +135,81 @@ run_bodies() {
     fi
   done
 }
+
+# --- bats-runner pinning (M5 submodule -> pinned tarball migration) ----------
+# These lock in the migration away from the vendored bats-core submodule. The
+# submodule was removed because it pulled ~200 files of third-party code into
+# lint scope and forced `submodules: true` on every checkout; the replacement
+# fetches an SHA-pinned tarball through bin/fetch-bats.sh. Each invariant below
+# is a way that migration could silently regress.
+
+@test "workflows: bats.env pins the runner by 64-hex SHA-256, not just a version (L5)" {
+  # A version alone prevents drift but not substitution - a tagged asset can be
+  # replaced in place. The hash is the trust anchor, so it must be present and
+  # well-formed, matching how shfmt/yq/hadolint are pinned.
+  [ -f tests/bats.env ]
+  # shellcheck disable=SC1091
+  run bash -c 'set -a; . tests/bats.env; printf "%s" "$BATS_SHA256"'
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^[0-9a-f]{64}$ ]]
+}
+
+@test "workflows: bats.env carries a version and a matching tag URL" {
+  # shellcheck disable=SC1091
+  . tests/bats.env
+  [ -n "$BATS_VERSION" ]
+  # The URL must reference the same version it claims to pin, or the hash guards
+  # a different artefact than the one named.
+  [[ "$BATS_URL" == *"v${BATS_VERSION}"* ]]
+}
+
+@test "workflows: no workflow re-introduces the bats submodule checkout" {
+  # 'submodules: true' was dropped from every checkout when the submodule went.
+  # Its return means someone re-vendored bats or wired a new submodule without
+  # updating this migration.
+  local f out
+  for f in .github/workflows/*.yml; do
+    out="$(yq -r '.jobs[].steps[] | select(.uses // "" | test("actions/checkout")) | .with.submodules // "absent"' "$f" 2>/dev/null | grep -v '^absent$' || true)"
+    if [ -n "$out" ]; then
+      echo "$f still requests submodules on checkout: $out" >&2
+      false
+    fi
+  done
+}
+
+@test "workflows: nothing references the old tests/bats submodule path" {
+  # Covers the runner invocation AND the hadolint prune that only existed to
+  # skip the vendored tree. Grep the raw files: a lingering path anywhere is a
+  # dangling reference now that tests/bats is gone.
+  run grep -rn 'tests/bats' .github/workflows/
+  [ "$status" -ne 0 ]
+}
+
+@test "workflows: the submodule is fully deregistered (no .gitmodules entry)" {
+  # A .gitmodules stanza left behind re-materialises the submodule on the next
+  # `git submodule update`, quietly undoing the migration.
+  if [ -f .gitmodules ]; then
+    run git config --file .gitmodules --get-regexp '^submodule\.tests/bats\.'
+    [ "$status" -ne 0 ]
+  fi
+}
+
+@test "workflows: the unit-test job fetches bats through the verified helper" {
+  # The bats job must run the suite via bin/fetch-bats.sh (which verifies the
+  # hash), not a bare runner path. Asserts the migration's mechanism is actually
+  # wired, not just that the old path is absent.
+  run yq -r '[.jobs.bats.steps[] | select((.run // "") | test("fetch-bats"))] | length' \
+    .github/workflows/lint.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "workflows: fetch-bats.sh exists, is executable, and is checksum-guarded" {
+  # It downloads with curl, which test \"no CI tool ... without a checksum\"
+  # forbids inside workflow run: bodies - so it MUST live in bin/ and MUST carry
+  # the sha256 verification itself, or the curl simply moved somewhere unchecked.
+  [ -x bin/fetch-bats.sh ]
+  run grep -c 'sha256sum -c' bin/fetch-bats.sh
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
