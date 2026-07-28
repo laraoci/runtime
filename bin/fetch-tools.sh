@@ -33,7 +33,10 @@ SRC_DIR="${LARAOCI_TOOLS_DIR:-$REPO_ROOT/.cache/tools}/src"
 TMP=""
 # Must return 0: as an EXIT trap this runs last, so a falsy final command (empty
 # TMP -> the [[ ]] test fails) would become the script's exit status under set -e.
-cleanup() { [[ -n "$TMP" ]] && rm -f "$TMP"; return 0; }
+cleanup() {
+  [[ -n "$TMP" ]] && rm -f "$TMP"
+  return 0
+}
 trap cleanup EXIT
 
 # --- argument parsing -------------------------------------------------------
@@ -45,16 +48,34 @@ selected=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --list) list_only=1; shift ;;
-    --path) path_mode=1; shift ;;
+    --list)
+      list_only=1
+      shift
+      ;;
+    --path)
+      path_mode=1
+      shift
+      ;;
     --dest)
-      [[ -n "${2:-}" ]] || { echo "error: --dest requires a directory" >&2; exit 2; }
-      dest_override="$2"; shift 2 ;;
+      [[ -n "${2:-}" ]] || {
+        echo "error: --dest requires a directory" >&2
+        exit 2
+      }
+      dest_override="$2"
+      shift 2
+      ;;
     -h | --help)
       sed -n '4,20p' "$0" | sed 's/^# \{0,1\}//'
-      exit 0 ;;
-    -*) echo "error: unknown flag '$1'" >&2; exit 2 ;;
-    *) selected+=("$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"); shift ;;
+      exit 0
+      ;;
+    -*)
+      echo "error: unknown flag '$1'" >&2
+      exit 2
+      ;;
+    *)
+      selected+=("$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')")
+      shift
+      ;;
   esac
 done
 
@@ -100,13 +121,18 @@ runner_path() {
   local t="$1" kind_v inner
   kind_v="${t}_KIND"
   local kind="${!kind_v}"
-  local lc; lc="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
+  local lc
+  lc="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
   case "$kind" in
     binary) echo "$BIN_DIR/$lc" ;;
     tar:*)
       inner="${kind#tar:}"
-      if [[ "$inner" == */* ]]; then echo "$SRC_DIR/$inner"; else echo "$BIN_DIR/$inner"; fi ;;
-    *) echo "error: $t has unknown KIND '$kind'" >&2; exit 2 ;;
+      if [[ "$inner" == */* ]]; then echo "$SRC_DIR/$inner"; else echo "$BIN_DIR/$inner"; fi
+      ;;
+    *)
+      echo "error: $t has unknown KIND '$kind'" >&2
+      exit 2
+      ;;
   esac
 }
 
@@ -115,7 +141,8 @@ fetch_one() {
   local t="$1"
   local url_v="${t}_URL" sha_v="${t}_SHA256" kind_v="${t}_KIND" ver_v="${t}_VERSION"
   local url="${!url_v:-}" sha="${!sha_v:-}" kind="${!kind_v:-}" ver="${!ver_v:-}"
-  local lc; lc="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
+  local lc
+  lc="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
 
   if ! tool_declared "$t"; then
     echo "error: '$lc' is not a tool declared in tools.env" >&2
@@ -126,7 +153,8 @@ fetch_one() {
     exit 2
   fi
 
-  local runner; runner="$(runner_path "$t")"
+  local runner
+  runner="$(runner_path "$t")"
   if [[ -x "$runner" ]]; then
     echo "fetch-tools: $lc present, skipping" >&2
     return 0
@@ -160,7 +188,8 @@ fetch_one() {
 
 if [[ "$list_only" == 1 ]]; then
   for t in "${tools_to_do[@]}"; do
-    v="${t}_VERSION"; k="${t}_KIND"
+    v="${t}_VERSION"
+    k="${t}_KIND"
     printf '%-11s %s  (%s)\n' \
       "$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')" "${!v}" "${!k}"
   done

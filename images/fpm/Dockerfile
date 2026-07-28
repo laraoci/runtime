@@ -67,6 +67,7 @@ COPY --chmod=0644 config/php/zz-laraoci-fpm.conf.template /usr/local/share/larao
 # change USER, so the pool would name a user the master cannot become. A build
 # with a different USER_NAME must fail loudly here instead.
 USER root
+# hadolint ignore=DL3008
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends libfcgi-bin; \

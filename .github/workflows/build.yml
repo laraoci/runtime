@@ -236,7 +236,7 @@ jobs:
           cache-to: ${{ inputs.push && format('type=gha,mode={0}', inputs.cache_mode) || '' }}
 
         # Two image-config assertions that container-structure-test cannot make:
-        # labels, because CST reads them but they are applied by THIS workflow
+        # labels, because CST reads them, but they are applied by THIS workflow
         # rather than by the Dockerfile, and the stop signal, because CST's
         # metadataTest schema has no field for it and a container cannot read
         # its own.
