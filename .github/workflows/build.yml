@@ -235,9 +235,15 @@ jobs:
           cache-from: ${{ inputs.push && 'type=gha' || '' }}
           cache-to: ${{ inputs.push && format('type=gha,mode={0}', inputs.cache_mode) || '' }}
 
-      - name: Assert the required labels are present (§11)
+        # Two image-config assertions that container-structure-test cannot make:
+        # labels, because CST reads them but they are applied by THIS workflow
+        # rather than by the Dockerfile, and the stop signal, because CST's
+        # metadataTest schema has no field for it and a container cannot read
+        # its own.
+      - name: Assert the image metadata (§11, §6.2)
         if: ${{ !inputs.push }}
         env:
+          IMAGE: ${{ inputs.image }}
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
           set -euo pipefail
@@ -247,6 +253,26 @@ jobs:
               || { echo "missing label org.opencontainers.image.$key" >&2; exit 1; }
           done
           jq . <<<"$labels"
+
+          # §6.2 / M2 trap 1. php-fpm reads SIGQUIT as a graceful drain and
+          # SIGTERM as immediate termination, so an fpm image left on the
+          # parent's SIGTERM is killed mid-request on every deploy - a
+          # truncated response, invisible until it happens under load. The
+          # expectation comes from config/images.yml, not from a literal here,
+          # so an image that changes its mind changes one file.
+          #
+          # Absent means SIGTERM: every image inherits runtime's explicit
+          # SIGTERM, and inheritance is real - a child that sets nothing reports
+          # the parent's value, where an image that never set one at all reports
+          # the empty string. So this also catches a runtime that silently lost
+          # its own STOPSIGNAL line.
+          want="$(yq -r '.images[strenv(IMAGE)].stopsignal // "SIGTERM"' config/images.yml)"
+          got="$(docker image inspect "$IMAGE_REF" --format '{{.Config.StopSignal}}')"
+          if [ "$got" != "$want" ]; then
+            echo "::error::${IMAGE} should carry STOPSIGNAL ${want} (config/images.yml) but the built image reports '${got}'"
+            exit 1
+          fi
+          echo "stop signal: ${got}"
 
         # Both of the steps below need the image present in the local daemon, so
         # they are gated on the build-and-load path. On a push build there is

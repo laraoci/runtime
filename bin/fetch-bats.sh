@@ -30,7 +30,10 @@ if [[ ! -x "$runner" ]]; then
     exit 1
   fi
   tar xzf "$tmp" -C "$cache"
-  test -x "$runner" || { echo "error: bats runner not found after extract" >&2; exit 1; }
+  test -x "$runner" || {
+    echo "error: bats runner not found after extract" >&2
+    exit 1
+  }
   echo "fetch-bats: bats-core ${BATS_VERSION} ready (sha256 verified)" >&2
 fi
 

@@ -80,7 +80,21 @@ commandTests:
     args: ["php", "-r", "echo ini_get('memory_limit');"]
     expectedOutput: ['^512M$']
 
+  # READS THE FILE, NOT ini_get(). This assertion used to ask PHP for
+  # ini_get('max_execution_time') and expect 0 - and it passed for the wrong
+  # reason: the CLI SAPI hardcodes max_execution_time=0 and php.ini cannot
+  # override it, so `php -i` reports "0 => 0" on EVERY image. The fpm image,
+  # which renders 30, reports 0 too. The test would therefore have passed even
+  # if this image had shipped the fpm value, which is precisely the regression
+  # it exists to catch.
+  #
+  # Asserting the rendered file tests the real claim - that §6.4's cli value
+  # reached the ini - and is the only form that can distinguish the two images.
   - name: rendered ini - max_execution_time is unbounded on cli (§6.4)
-    command: /usr/local/bin/laraoci-entrypoint
-    args: ["php", "-r", "echo ini_get('max_execution_time');"]
-    expectedOutput: ['^0$']
+    command: sh
+    args:
+      - -c
+      - |
+        /usr/local/bin/laraoci-entrypoint true >/dev/null 2>&1
+        grep -E '^max_execution_time' /usr/local/etc/php/conf.d/zz-laraoci.ini
+    expectedOutput: ['^max_execution_time = 0\n$']

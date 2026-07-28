@@ -85,6 +85,17 @@ images:
     parent: runtime
     dockerfile: images/fpm/Dockerfile
     exposes: [9000]
+    # php-fpm reads SIGQUIT as "drain, then exit" and SIGTERM as "die now" - the
+    # opposite of the CLI images, which trap SIGTERM through pcntl. runtime sets
+    # SIGTERM because that suits most of the graph, so fpm must set this back or
+    # every container is killed mid-request on stop (§6.2, M2 trap 1).
+    #
+    # It lives here rather than only in the Dockerfile because
+    # container-structure-test cannot assert a stop signal - its metadataTest
+    # schema has no such field, and a container cannot read its own - so
+    # .github/workflows/build.yml checks the built image against this key.
+    # Absent means SIGTERM, which is what every other image inherits.
+    stopsignal: SIGQUIT
     description: PHP-FPM for Laravel, to be run behind Nginx, Caddy or Traefik.
   builder:
     parent: runtime

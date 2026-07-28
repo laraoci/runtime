@@ -237,10 +237,16 @@ RUN set -eux; \
 WORKDIR /var/www/html
 
 # §6.2 requires this stated rather than inherited; the explicitness is the
-# documentation. NOTE FOR M2: the upstream fpm image sets SIGQUIT, and php-fpm
-# treats SIGQUIT as graceful shutdown and SIGTERM as immediate termination.
-# images/fpm/Dockerfile MUST set `STOPSIGNAL SIGQUIT` back. SIGTERM is correct
-# here because cli, queue, and scheduler trap it through pcntl.
+# documentation. It overrides the upstream -fpm image's SIGQUIT, and it is
+# correct for MOST of the graph but not all of it: cli, queue and scheduler trap
+# SIGTERM through pcntl, while php-fpm reads SIGTERM as immediate termination
+# and SIGQUIT as the graceful drain.
+#
+# images/fpm/Dockerfile therefore restores SIGQUIT, and every image is checked
+# against images.<name>.stopsignal in config/images.yml by
+# .github/workflows/build.yml - container-structure-test has no field for a stop
+# signal, and a container cannot read its own. A child that sets nothing
+# inherits this line, so the check also catches this line going missing.
 STOPSIGNAL SIGTERM
 
 USER ${USER_NAME}

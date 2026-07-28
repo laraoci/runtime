@@ -124,6 +124,29 @@ run_bodies() {
   [[ "$output" == *"steps.args.outputs"* ]]
 }
 
+@test "workflows: the stop signal is asserted against config, not left to a Dockerfile (M2)" {
+  # This is the ONLY place a wrong STOPSIGNAL is caught: container-structure-test
+  # has no metadataTest field for it and a container cannot read its own. The
+  # failure it guards is silent - php-fpm reads SIGTERM as immediate death, so
+  # an fpm image left on the parent's signal truncates in-flight responses on
+  # every deploy and reports nothing.
+  run yq -r '[.jobs.build.steps[] | select((.run // "") | test("StopSignal"))] | length' \
+    .github/workflows/build.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "workflows: the stop signal expectation comes from config/images.yml (M2)" {
+  # A literal SIGQUIT in the workflow would assert the workflow's opinion rather
+  # than the image catalogue's, and the two would drift the first time an image
+  # changed its mind.
+  run yq -r '.jobs.build.steps[] | select((.run // "") | test("StopSignal")) | .run' \
+    .github/workflows/build.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stopsignal"* ]]
+  [[ "$output" == *"config/images.yml"* ]]
+}
+
 @test "workflows: no CI tool is downloaded without a checksum (L5)" {
   local f out
   for f in .github/workflows/*.yml; do

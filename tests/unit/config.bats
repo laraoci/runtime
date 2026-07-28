@@ -37,6 +37,17 @@ setup() {
   [ "$output" -eq 0 ]
 }
 
+@test "config: fpm declares the SIGQUIT stop signal, and nothing else declares one (§6.2)" {
+  # php-fpm drains on SIGQUIT and dies on SIGTERM; the CLI images are the other
+  # way round and inherit runtime's SIGTERM. If this key ever spreads to another
+  # image, that image's workers stop trapping their own shutdown.
+  run yq -r '.images.fpm.stopsignal' config/images.yml
+  [ "$output" = "SIGQUIT" ]
+
+  run yq -r '[.images | to_entries | .[] | select(.value.stopsignal) | .key] | join(",")' config/images.yml
+  [ "$output" = "fpm" ]
+}
+
 @test "config: every image carries a description for its OCI label" {
   run bash -c "yq -r '[.images[] | select((.description // \"\") == \"\")] | length' config/images.yml"
   [ "$output" -eq 0 ]
