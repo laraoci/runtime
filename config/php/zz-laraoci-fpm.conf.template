@@ -1,0 +1,59 @@
+; LaraOCI FPM pool overlay - spec §7.3, LOCI-024. Rendered from this template by
+; /usr/local/bin/laraoci-entrypoint into
+; /usr/local/etc/php-fpm.d/zz-laraoci.conf at container start, and once at build
+; time so the shipped image is valid without an entrypoint.
+;
+; ADDITIVE ONLY. php-fpm.conf includes php-fpm.d/*.conf in glob order:
+;   docker.conf -> www.conf -> zz-docker.conf -> zz-laraoci.conf
+; so this file is last and wins on genuine overlap, and a consumer mounting
+; zzz-mine.conf still wins over it.
+;
+; Everything upstream already sets is deliberately ABSENT. Verified live on
+; runtime: docker.conf carries clear_env = no, access.log = /proc/self/fd/2,
+; catch_workers_output = yes, decorate_workers_output = no and listen = 9000;
+; zz-docker.conf carries daemonize = no. A second copy here is a second thing to
+; drift, so they are asserted instead - statically in tests/structure/fpm.yaml
+; and behaviourally by the LOCI-030 smoke test.
+;
+; The [www] header is load-bearing. FPM section headers persist ACROSS file
+; boundaries, so without it these directives land in whatever section was open
+; when the previous file ended. zz-docker.conf does end with a [www] line, but
+; upstream documents it as backwards compatibility "will be removed in 8.6+" -
+; inheriting it is exactly the silent breakage trap 2 is about.
+[www]
+
+; INERT on the normal path, and kept anyway. The FPM master runs as laravel
+; (USER laravel), and a non-root master cannot setuid, so php-fpm logs
+;   NOTICE: [pool www] 'user' directive is ignored when FPM is not running as root
+; twice at every start - expected output, verified live, not a misconfiguration.
+; They stay because they are the only thing between `docker run --user 0` and
+; workers running as www-data (33): www.conf sets user = www-data and sorts
+; BEFORE this file, so removing these two lines would hand a root-started
+; container the wrong worker identity and break the shared-storage ownership
+; contract of D8. images/fpm/Dockerfile asserts these two lines match USER_NAME.
+user = laravel
+group = laravel
+
+; §6.4's fpm rows. The entrypoint refuses to render a template whose variables
+; are unset or empty, so a missing ENV in images/fpm/Dockerfile is a start-up
+; failure rather than a blank directive php-fpm silently accepts.
+pm = ${PHP_FPM_PM}
+pm.max_children = ${PHP_FPM_MAX_CHILDREN}
+pm.start_servers = ${PHP_FPM_START_SERVERS}
+pm.min_spare_servers = ${PHP_FPM_MIN_SPARE_SERVERS}
+pm.max_spare_servers = ${PHP_FPM_MAX_SPARE_SERVERS}
+pm.max_requests = ${PHP_FPM_MAX_REQUESTS}
+
+; The healthcheck target (LOCI-025) and its operator-facing sibling. Both are
+; pool-internal paths handled by FPM itself - they never reach PHP, so they
+; cannot be shadowed by an application route.
+ping.path = /fpm-ping
+ping.response = pong
+pm.status_path = /fpm-status
+
+; §6.3 for the WORKERS specifically. docker.conf's error_log is in [global] and
+; covers the master; php_admin_value cannot be overridden by ini_set() in
+; application code, so a stray ini_set('error_log', '/var/log/app.log') cannot
+; put a log file inside the container.
+php_admin_value[error_log] = /proc/self/fd/2
+php_admin_flag[log_errors] = on

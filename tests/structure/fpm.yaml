@@ -43,6 +43,20 @@ fileExistenceTests:
     path: /usr/local/bin/composer
     shouldExist: false
 
+  # LOCI-024. The OWNERSHIP is the assertion, not the existence: php-fpm.d stays
+  # root-owned, so the entrypoint can only rewrite this file at start because it
+  # was pre-created as laravel. Get that wrong and nothing breaks loudly - the
+  # render's `cat > target` fails, render() logs "not writable" and returns 0,
+  # and the container serves requests under the BUILD-time pool while ignoring
+  # every PHP_FPM_* a consumer set. The uid/gid are literals because D8 fixes
+  # them; a build with a different USER_UID is already refused in RUN 1.
+  - name: the rendered pool is writable by the runtime user (LOCI-024, D8)
+    path: /usr/local/etc/php-fpm.d/zz-laraoci.conf
+    shouldExist: true
+    uid: 1000
+    gid: 1000
+    permissions: '-rw-r--r--'
+
 commandTests:
   # ------------------------------------------------------------------------
   # TRAP 2 - THE UPSTREAM AUDIT. The official -fpm image already ships
@@ -83,6 +97,97 @@ commandTests:
     args: ["-c", "php-fpm -tt 2>&1 | sed -n 's/.*\\(listen\\) = \\(.*\\)/\\1=\\2/p' | sort -u"]
     expectedOutput:
       - 'listen=9000'
+
+  # ------------------------------------------------------------------------
+  # THE POOL OVERLAY (LOCI-024, §7.3). Three separate claims, deliberately not
+  # merged: what the resolved configuration SAYS, what our file's SHAPE is, and
+  # what our file does NOT contain. Only the first is visible to `php-fpm -tt`,
+  # and only the last two can catch trap 2.
+  # ------------------------------------------------------------------------
+
+  # Claim one: OUR VALUES WON. Read through -tt rather than off the file,
+  # because the file's contents prove nothing about precedence - www.conf ships
+  # pm.max_children = 5 and user = www-data, and it sorts BEFORE zz-laraoci.conf
+  # in the php-fpm.d/*.conf glob. Seeing 20 and laravel here is the only
+  # evidence that our file is last and that the [www] header put these
+  # directives in the pool rather than somewhere php-fpm ignores.
+  #
+  # The pattern anchors each name on the whitespace that precedes it - -tt
+  # indents every pool directive with a tab. Without that anchor the greedy .*
+  # lets `listen.group = undefined` match the `group` alternative and report
+  # group=undefined, which is a different directive entirely.
+  - name: the LaraOCI pool values win over upstream's defaults (LOCI-024, §7.3)
+    command: sh
+    args: ["-c", "php-fpm -tt 2>&1 | sed -n 's/.*[[:space:]]\\(user\\|group\\|pm\\|pm\\.max_children\\|pm\\.start_servers\\|pm\\.min_spare_servers\\|pm\\.max_spare_servers\\|pm\\.max_requests\\|pm\\.status_path\\|ping\\.path\\|ping\\.response\\) = \\(.*\\)/\\1=\\2/p' | sort -u"]
+    expectedOutput:
+      # D8's identity, overriding www.conf's www-data. Inert while the master
+      # runs unprivileged - php-fpm logs "'user' directive is ignored when FPM
+      # is not running as root" twice, which is upstream's own www.conf talking
+      # and is expected output - but load-bearing under `docker run --user 0`.
+      - 'user=laravel'
+      - 'group=laravel'
+      # §6.4's fpm rows, as rendered from the PHP_FPM_* environment.
+      - 'pm=dynamic'
+      - 'pm\.max_children=20'
+      - 'pm\.start_servers=4'
+      - 'pm\.min_spare_servers=2'
+      - 'pm\.max_spare_servers=6'
+      - 'pm\.max_requests=500'
+      # LOCI-025's target and its operator-facing sibling. Pool-internal paths
+      # handled by FPM itself, so no application route can shadow them.
+      - 'ping\.path=/fpm-ping'
+      - 'ping\.response=pong'
+      - 'pm\.status_path=/fpm-status'
+
+  # Claim two: the pool is TUNABLE. Everything above would pass identically if
+  # the template had been baked into a static file at build time, which is the
+  # one thing §7.3 says it must not be. Setting the variable and re-running the
+  # entrypoint is the only way to tell the two apart - and it exercises the
+  # write path that the ownership test above protects, so a root-owned pool file
+  # fails here too rather than silently pinning every consumer to 20 children.
+  - name: a PHP_FPM_* override reaches the running pool (LOCI-024, §6.4)
+    command: sh
+    args:
+      - -c
+      - |
+        /usr/local/bin/laraoci-entrypoint true >/dev/null 2>&1
+        php-fpm -tt 2>&1 | sed -n 's/.*[[:space:]]\(pm\.max_children\) = \(.*\)/\1=\2/p'
+    envVars:
+      - key: PHP_FPM_MAX_CHILDREN
+        value: "40"
+    expectedOutput: ['^pm\.max_children=40\n$']
+
+  # Claim three, first half: ONE [www] HEADER, and it is ours. FPM section
+  # headers persist across file boundaries, so a pool file without its own
+  # header inherits whatever section was open when the previous file ended.
+  # zz-docker.conf does end with a [www] line today, but upstream documents that
+  # as backwards compatibility "will be removed in 8.6+" - the day it goes, an
+  # unheadered file drops these directives into [global], where php-fpm rejects
+  # some and ignores the rest. A second header would be just as wrong: it opens
+  # a duplicate pool definition.
+  - name: the pool file opens exactly one [www] section (trap 2, §7.3)
+    command: sh
+    args: ["-c", "grep -c '^\\[' /usr/local/etc/php-fpm.d/zz-laraoci.conf; grep -c '^\\[www\\]' /usr/local/etc/php-fpm.d/zz-laraoci.conf"]
+    expectedOutput: ['^1\n1\n$']
+
+  # Claim three, second half: ADDITIVE ONLY. Every name below is already set by
+  # upstream's docker.conf or zz-docker.conf, and the audits at the top of this
+  # file assert those values survive. Restating any of them here would make that
+  # audit self-fulfilling - it would then be checking LaraOCI's copy rather than
+  # upstream's original, and a base bump that changed the real default would
+  # pass silently while the running server used our stale duplicate.
+  #
+  # The first grep prints the offending lines when this fails; the second is the
+  # assertion. `|| true` on both because grep exits 1 on no match, which is the
+  # passing case.
+  - name: the pool file restates nothing upstream already sets (trap 2, §6.3)
+    command: sh
+    args:
+      - -c
+      - |
+        grep -nE '^(clear_env|daemonize|listen|access\.log|catch_workers_output|decorate_workers_output)' /usr/local/etc/php-fpm.d/zz-laraoci.conf || true
+        grep -cE '^(clear_env|daemonize|listen|access\.log|catch_workers_output|decorate_workers_output)' /usr/local/etc/php-fpm.d/zz-laraoci.conf || true
+    expectedOutput: ['^0\n$']
 
   # The per-image default; _common.yaml asserts only that an explicit override
   # reaches the ini. This is the value a request actually runs under.

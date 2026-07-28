@@ -2,7 +2,7 @@
 # bin/*.sh or to an already-pinned tool, never logic of its own. bin/*.sh is
 # tested (tests/unit) and CI calls it directly; a recipe that grew real
 # behaviour would be untested code on a second execution path. These tests keep
-# the Makefile honest so it stays sugar and never becomes a fork of the logic.
+# the Makefile honest, so it stays sugar and never becomes a fork of the logic.
 
 # Recipe lines for a target: the tab-indented block after `target:`.
 recipe_lines() {
@@ -37,7 +37,7 @@ recipe_lines() {
   # known delegate: a bin/ script, the pinned bats/shellcheck/shfmt, or the
   # fetch-bats path expansion. Pure-output targets (help, hooks) are exempt -
   # they only printf.
-  local allowed='^(bin/|shellcheck |shfmt |\$\(BATS\)|\$\{BATS\})'
+  local allowed='^(bin/|shellcheck |\$\(BATS\)|\$\{BATS\}|\$\(TOOLS_BIN\)/)'
   local target line
   for target in test lint fmt fmt-fix matrix affected sizes structure; do
     while IFS= read -r line; do

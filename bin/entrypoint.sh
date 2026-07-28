@@ -8,6 +8,7 @@ set -eu
 
 TEMPLATE_DIR="${LARAOCI_TEMPLATE_DIR:-/usr/local/share/laraoci/templates}"
 CONF_D="${PHP_INI_DIR:-/usr/local/etc/php}/conf.d"
+FPM_CONF_D="${LARAOCI_FPM_CONF_D:-/usr/local/etc/php-fpm.d}"
 
 log() { echo "laraoci: $*" >&2; }
 
@@ -76,6 +77,15 @@ render() {
 }
 
 render "$TEMPLATE_DIR/zz-laraoci.ini.template" "$CONF_D/zz-laraoci.ini"
+
+# The FPM pool overlay (§7.3, LOCI-024) ships only in images/fpm, so its
+# presence is the gate - no image-name check, and cli/builder skip it for free.
+# Gated on the TEMPLATE rather than on the launched command so that `php-fpm -tt`
+# and a consumer's own entrypoint read the same pool the server would.
+fpm_template="$TEMPLATE_DIR/zz-laraoci-fpm.conf.template"
+if [ -f "$fpm_template" ]; then
+  render "$fpm_template" "$FPM_CONF_D/zz-laraoci.conf"
+fi
 
 # Preload (§7.7, D14, 🧭 4). opcache in a short-lived CLI process is per-process:
 # the shared segment is created at startup and destroyed at exit, so a preload
