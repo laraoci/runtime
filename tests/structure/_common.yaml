@@ -1,0 +1,233 @@
+schemaVersion: '2.0.0'
+
+# The INHERITED contract - the part of spec §6 that is identical on every image
+# in the graph. bin/structure-test.sh passes this file alongside
+# tests/structure/<image>.yaml, so each assertion runs on the descendant itself
+# rather than only on `runtime`. A regression introduced IN a child image - a
+# stray USER root, a package that drags Ghostscript back in, an entrypoint
+# overwritten by a COPY - is caught on that child's own build leg.
+#
+# WHAT MAY LIVE HERE: only what is true of EVERY image. Anything an image
+# legitimately differs on belongs in its own file, or this file becomes a
+# lowest-common-denominator that asserts nothing. Deliberately absent, with the
+# reason each time:
+#
+#   cmd                        every image has its own (§7.2-7.6)
+#   PHP_MEMORY_LIMIT           256M on fpm, 512M on cli and builder (§6.4)
+#   PHP_MAX_EXECUTION_TIME     30 on fpm, 0 on cli and builder (§6.4)
+#   LARAOCI_DEFAULT_BINARY     php-fpm on runtime/fpm, php elsewhere (🧭 1)
+#   Composer's absence         D6 for cli/fpm/queue/scheduler, PRESENT in builder
+#   rendered memory_limit      follows PHP_MEMORY_LIMIT, so it is per-image too
+#
+# NOTE: container-structure-test runs commandTests WITHOUT the image ENTRYPOINT,
+# so anything depending on the rendered zz-laraoci.ini invokes
+# /usr/local/bin/laraoci-entrypoint explicitly - which also makes these the
+# regression tests for the render path itself.
+
+metadataTest:
+  # NOTE: the field is envVars, not env. CST rejects the whole config file with
+  # "field env not found in type v2.MetadataTest" and runs nothing at all.
+  user: laravel
+  workdir: /var/www/html
+  entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/laraoci-entrypoint"]
+  envVars:
+    - key: PHP_UPLOAD_MAX_FILESIZE
+      value: 16M
+    - key: PHP_POST_MAX_SIZE
+      value: 16M
+    - key: PHP_OPCACHE_ENABLE
+      value: "1"
+    - key: PHP_OPCACHE_VALIDATE_TIMESTAMPS
+      value: "0"
+    - key: PHP_OPCACHE_MEMORY_CONSUMPTION
+      value: "192"
+    - key: PHP_OPCACHE_MAX_ACCELERATED_FILES
+      value: "20000"
+    - key: MAGICK_THREAD_LIMIT
+      value: "1"
+    - key: MAGICK_TMPDIR
+      value: /tmp
+
+fileExistenceTests:
+  - name: tini is present (D9)
+    path: /usr/bin/tini
+    shouldExist: true
+    permissions: '-rwxr-xr-x'
+  - name: app directory is owned by laravel (§6.1)
+    path: /var/www/html
+    shouldExist: true
+    uid: 1000
+    gid: 1000
+  - name: rendered ini is writable by laravel and nobody else (Gap 1)
+    path: /usr/local/etc/php/conf.d/zz-laraoci.ini
+    shouldExist: true
+    uid: 1000
+    gid: 1000
+    permissions: '-rw-r--r--'
+  - name: conf.d itself is still root-owned (Gap 1)
+    path: /usr/local/etc/php/conf.d
+    shouldExist: true
+    uid: 0
+    gid: 0
+  - name: ini template ships under the LaraOCI assets path (§6.1)
+    path: /usr/local/share/laraoci/templates/zz-laraoci.ini.template
+    shouldExist: true
+  - name: entrypoint is executable
+    path: /usr/local/bin/laraoci-entrypoint
+    shouldExist: true
+    permissions: '-rwxr-xr-x'
+  - name: ImageMagick policy is installed (§3.2)
+    path: /etc/ImageMagick-7/policy.xml
+    shouldExist: true
+  - name: Ghostscript binary is absent (§3.2)
+    path: /usr/bin/gs
+    shouldExist: false
+  - name: extension installer was removed before the layer committed (§7.1)
+    path: /usr/local/bin/install-php-extensions
+    shouldExist: false
+  - name: CA certificates are present, inherited from the base (§7.1)
+    path: /etc/ssl/certs/ca-certificates.crt
+    shouldExist: true
+
+commandTests:
+  - name: runs as uid 1000 (D8)
+    command: id
+    args: ["-u"]
+    expectedOutput: ['^1000\n$']
+
+  - name: runs as gid 1000 (D8)
+    command: id
+    args: ["-g"]
+    expectedOutput: ['^1000\n$']
+
+  - name: the CLI binary works on the fpm base (D18)
+    command: php
+    args: ["-v"]
+    expectedOutput: ['PHP 8\.\d+\.\d+']
+
+  # Asserted on EVERY image, not just fpm: D18 is the reason the graph has one
+  # root, and queue/scheduler inherit this binary from cli without using it. An
+  # image that lost it would still pass every other test here.
+  - name: php-fpm works (D18 - the whole graph rests on this)
+    command: php-fpm
+    args: ["-v"]
+    expectedOutput: ['PHP 8\.\d+\.\d+']
+
+  - name: pcntl and posix are loaded (§6.2 - SIGTERM in queue workers)
+    command: sh
+    args: ["-c", "php -m | grep -cx -e pcntl -e posix"]
+    expectedOutput: ['^2\n$']
+
+  - name: the twelve-extension core set is complete (§5)
+    command: sh
+    args:
+      - -c
+      # sort -u is load-bearing: php -m prints "Zend OPcache" TWICE, once under
+      # [PHP Modules] and once under [Zend Modules], so the raw count is 13.
+      - "php -m | sort -u | grep -cx -e bcmath -e exif -e gd -e imagick -e intl -e 'Zend OPcache' -e pcntl -e pdo_mysql -e pdo_pgsql -e redis -e sockets -e zip"
+    expectedOutput: ['^12\n$']
+
+  - name: imagick links against ImageMagick 7 (§3.2)
+    command: php
+    args: ["-r", "echo Imagick::getVersion()['versionString'];"]
+    expectedOutput: ['ImageMagick 7\.']
+
+  # The canary. If ImageMagick's tokenizer rejects policy.xml it loads an EMPTY
+  # policy and allows everything, with no warning anywhere. A resource limit
+  # that survived is the cheapest proof the file was actually read.
+  - name: policy.xml was parsed at all (§3.2)
+    command: php
+    args: ["-r", "echo (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY);"]
+    expectedOutput: ['^268435456$']
+
+  # The probe file MUST exist. A missing path throws "unable to open image",
+  # which is an ImagickException too - so the §10.1 wording ("must throw
+  # ImagickException") is satisfied by a policy-less image. Assert the message.
+  #
+  # @-prefixed indirect reads are deliberately absent: on IM7 they fail with
+  # "no decode delegate for this image format", never reaching the path policy,
+  # so an assertion on them proves nothing about `pattern="@*"`.
+  - name: PDF, MVG and TEXT coders are denied by policy (§3.2, through PHP - no identify in the image)
+    command: sh
+    args:
+      - -c
+      # NOT A STYLE CHOICE: this contains no PHP variables because
+      # container-structure-test performs its own substitution on command/args
+      # and DELETES any $identifier before the container sees it - with no
+      # escape (neither $$ nor \$ works). PHP would receive ' = "..."' and die
+      # with "unexpected token =". Keep this code dollar-free.
+      #
+      # The exceptions are left uncaught on purpose: their message goes to
+      # stderr, which lets grep make the assertion without needing an $e to
+      # inspect. The probe file is written first so a missing-file error cannot
+      # masquerade as a policy denial.
+      - |
+        php -r 'file_put_contents("/tmp/policy-probe", "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n");'
+        { php -r '(new Imagick())->readImage("PDF:/tmp/policy-probe");' 2>&1
+          php -r '(new Imagick())->readImage("MVG:/tmp/policy-probe");' 2>&1
+          php -r '(new Imagick())->readImage("TEXT:/tmp/policy-probe");' 2>&1
+        } | grep -c 'not allowed by the security policy'
+    expectedOutput: ['^3\n$']
+
+  - name: imagick still decodes JPEG, PNG and WebP after the purge (LOCI-014)
+    command: php
+    args:
+      - -r
+      # Dollar-free for the same reason as the policy test above: CST strips
+      # $identifier from args, so any PHP variable here becomes a syntax error.
+      - |
+        echo count(array_intersect(['JPEG', 'PNG', 'WEBP'], array_map('strtoupper', Imagick::queryFormats()))) === 3 ? 'OK' : 'MISSING';
+    expectedOutput: ['^OK$']
+
+  # /bin/sh is dash, and dash's `command -v` exits 127 for a missing name where
+  # bash exits 1. Asserting the intent explicitly makes the test independent of
+  # which shell /bin/sh points at.
+  - name: Ghostscript is not on PATH (§3.2)
+    command: sh
+    args: ["-c", "if command -v gs >/dev/null 2>&1; then echo FOUND; exit 1; fi; echo ABSENT"]
+    expectedOutput: ['^ABSENT\n$']
+    exitCode: 0
+
+  - name: procps is absent (§7.1, D21)
+    command: sh
+    args: ["-c", "if command -v ps >/dev/null 2>&1; then echo FOUND; exit 1; fi; echo ABSENT"]
+    expectedOutput: ['^ABSENT\n$']
+    exitCode: 0
+
+  - name: preload is unset by default (§6.4, D14)
+    command: sh
+    args: ["-c", "printenv PHP_OPCACHE_PRELOAD"]
+    exitCode: 1
+
+  - name: rendered ini - expose_php is Off (§6.5)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["sh", "-c", "php -i | grep -E '^expose_php'"]
+    expectedOutput: ['expose_php *=> *Off *=> *Off']
+
+  - name: rendered ini - opcache.validate_timestamps is Off (§6.5, §10.1)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["sh", "-c", "php -i | grep -E '^opcache.validate_timestamps'"]
+    expectedOutput: ['opcache\.validate_timestamps *=> *Off *=> *Off']
+
+  - name: rendered ini - errors go to stderr, never to a file (§6.3)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["sh", "-c", "php -i | grep -E '^(error_log|log_errors|display_errors)'"]
+    expectedOutput:
+      - 'error_log *=> */proc/self/fd/2'
+      - 'log_errors *=> *On'
+      - 'display_errors *=> *Off'
+
+  - name: rendered ini - JIT is disabled (D11)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["php", "-r", "echo ini_get('opcache.jit');"]
+    expectedOutput: ['^disable$']
+
+  # The per-image DEFAULT lives in each image's own file; what is common is that
+  # an explicit override reaches the ini on every one of them.
+  - name: rendered ini - an env override reaches the ini (§6.4)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["php", "-r", "echo ini_get('memory_limit');"]
+    envVars:
+      - key: PHP_MEMORY_LIMIT
+        value: 1024M
+    expectedOutput: ['^1024M$']

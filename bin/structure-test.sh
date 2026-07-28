@@ -58,10 +58,30 @@ if [[ ! -f "$config" ]]; then
   exit 0
 fi
 
+# The inherited contract (§6) runs on EVERY image alongside its own config, so
+# that a regression introduced IN a descendant - a stray USER root, a package
+# that drags Ghostscript back in, an entrypoint a COPY overwrote - fails on that
+# descendant's own leg instead of being invisible because only `runtime` was
+# ever asserted. container-structure-test accepts --config repeatedly and runs
+# each file, so the two compose without either knowing about the other.
+#
+# It rides ON the per-image config rather than applying by itself. That keeps
+# "an image gains coverage by adding a file" literally true, keeps an image with
+# no file the announced no-op above, and leaves a future variant that
+# legitimately breaks the common contract - a -slim image without imagick
+# (LOCI-056) - able to opt out by not having a config, rather than needing a
+# skip mechanism invented here on speculation.
+configs=()
+shared="$config_dir/_common.yaml"
+if [[ -f "$shared" ]]; then
+  configs+=(--config "$shared")
+fi
+configs+=(--config "$config")
+
 runner="${LARAOCI_CST_CMD:-container-structure-test}"
 if ! command -v "$runner" >/dev/null 2>&1; then
   echo "error: '$runner' not found. Install container-structure-test." >&2
   exit 1
 fi
 
-exec "$runner" test --image "$ref" --config "$config"
+exec "$runner" test --image "$ref" "${configs[@]}"

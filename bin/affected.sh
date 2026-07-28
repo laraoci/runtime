@@ -77,9 +77,16 @@ for path in "${changed[@]}"; do
     # Documentation and the test inputs that only feed the bats job never
     # rebuild an image.
     docs/* | tests/unit/* | tests/fixtures/* | tests/probe/* | tests/stub/* | tests/bats/*) : ;;
-    # A structure-test config runs ONLY inside a build leg for its own image, so
-    # editing one must build that image - and only that image, since every image
-    # carries its own config (M4).
+    # The shared contract is passed to EVERY image's structure run alongside its
+    # own config (bin/structure-test.sh), so editing it must rebuild the whole
+    # graph. The fallback below already reaches that answer - "_common" is not
+    # an image name, so it takes the be-conservative branch - but by accident.
+    # Named here so the rebuild is a stated consequence of what the file is,
+    # and so a future image called `common` cannot quietly narrow it to one leg.
+    tests/structure/_common.yaml) add_all ;;
+    # Any OTHER structure-test config runs only inside a build leg for its own
+    # image, so editing one must build that image - and only that image, since
+    # every image carries its own config (M4).
     tests/structure/*.yaml)
       name="${path#tests/structure/}"
       name="${name%.yaml}"

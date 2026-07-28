@@ -51,6 +51,24 @@ affected() { printf '%s\n' "$@" | bin/affected.sh; }
   [[ "$output" != *"cli"* ]]
 }
 
+@test "affected: the shared structure contract rebuilds all six (M2)" {
+  # _common.yaml runs on every image's leg, so a change to it that rebuilt only
+  # one would leave five images asserting the old contract - and passing.
+  run affected "tests/structure/_common.yaml"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | sort | tr '\n' ' ')" = "builder cli fpm queue runtime scheduler " ]
+}
+
+@test "affected: the shared contract is matched by name, not by falling through (M2)" {
+  # The be-conservative fallback gives the same six images for any unrecognised
+  # config name, so the count alone cannot tell the two paths apart. A config
+  # for an image that DOES exist must still narrow to that one image - if this
+  # ever returns six, the _common case has swallowed the specific one.
+  run affected "tests/structure/cli.yaml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "cli" ]
+}
+
 @test "affected: unit tests, fixtures and probes still rebuild nothing" {
   run affected "tests/unit/affected.bats" "tests/fixtures/budgets.yml" "tests/probe/no-extra.Dockerfile"
   [ "$status" -eq 0 ]
