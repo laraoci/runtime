@@ -84,10 +84,27 @@ render "$TEMPLATE_DIR/zz-laraoci.ini.template" "$CONF_D/zz-laraoci.ini"
 # worker opts in with LARAOCI_PRELOAD_FORCE=1 (that is how queue enables it in
 # M3). The file is truncated when preload is off, so a restart without the
 # variable does not leave a stale directive behind.
+#
+# 🧭 1 (M2). Upstream's docker-php-entrypoint prepends `php-fpm` - not `php` -
+# whenever the first argument starts with a dash. On an fpm image that is
+# correct; on cli, queue, scheduler and builder, which inherit the same script
+# from the fpm base (D18), it starts the wrong binary AND makes the gate below
+# read a one-off artisan command as an FPM process, enabling a preload that the
+# process throws away when it exits. Both halves are fixed here, from ONE source
+# of truth: LARAOCI_DEFAULT_BINARY, set per image.
+#
+# The prepend is done HERE, before the handoff, so upstream's version can never
+# fire - it sees an argv that no longer starts with a dash. That keeps D20
+# (chain, do not replace) intact without shipping a per-image copy of upstream's
+# script, which would be one more file to drift on a base bump.
+#
+# The default is php-fpm, so an image that does not set the variable behaves
+# exactly as it did before this change.
+default_binary="${LARAOCI_DEFAULT_BINARY:-php-fpm}"
 case "${1:-}" in
-  -*) launched=php-fpm ;;
-  *) launched="$(basename "${1:-}")" ;;
+  -*) set -- "$default_binary" "$@" ;;
 esac
+launched="$(basename "${1:-}")"
 
 preload_ini="$CONF_D/zz-laraoci-preload.ini"
 

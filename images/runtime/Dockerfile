@@ -196,6 +196,20 @@ ENV PHP_MEMORY_LIMIT=256M \
     MAGICK_THREAD_LIMIT=1 \
     MAGICK_TMPDIR=/tmp
 
+# 🧭 1 (M2). The single source of truth for what a dash-first argument means on
+# this image. laraoci-entrypoint reads it TWICE over - for the binary it
+# prepends, and for the preload classification that follows from it - so the two
+# can never disagree. `php-fpm` is correct here because this image IS fpm-based
+# (D18): `docker run <runtime> -v` reports (fpm-fcgi), which is what M1 verified
+# and what the entrypoint's own fallback preserves for anything that does not
+# set this.
+#
+# Declared rather than left to that fallback, so `docker inspect` answers the
+# question without anyone reading a shell script - and so that a descendant
+# which is not an FPM process (cli, queue, scheduler, builder) is visibly
+# OVERRIDING a stated default rather than introducing a variable from nowhere.
+ENV LARAOCI_DEFAULT_BINARY=php-fpm
+
 # ---------------------------------------------------------------------------
 # RUN 4 - BOUNDARY: must come after the ENV defaults and after the entrypoint
 # is in place, because it renders through the entrypoint itself.
@@ -235,23 +249,27 @@ USER ${USER_NAME}
 # execs docker-php-entrypoint, which execs the command - no wrapper is left in
 # the process tree and signals reach the real process.
 #
-# NOTE FOR M2, second carry-forward (the first is STOPSIGNAL above).
-# docker-php-entrypoint is INHERITED from the fpm base, and the fpm variant
-# prepends `php-fpm` - not `php` - when the first argument starts with a dash:
+# THE DASH-FIRST ARGUMENT (D20, 🧭 1). docker-php-entrypoint is INHERITED from
+# the fpm base, and the fpm variant prepends `php-fpm` - not `php` - whenever
+# the first argument starts with a dash:
 #
 #   if [ "${1#-}" != "$1" ]; then set -- php-fpm "$@"; fi
 #
-# Verified live: `docker run <runtime> -v` reports `PHP 8.4.23 (fpm-fcgi)`,
-# where `docker run <runtime> php -v` reports `(cli)`. Correct here, because
-# this image IS fpm-based (D18). But every descendant inherits that script, so
-# in M2 `docker run laraoci/cli -v` would also start FPM.
+# Correct for THIS image, which is fpm-based (D18), and wrong for every
+# descendant that is not an FPM process - and wrong twice over, because
+# bin/entrypoint.sh used to read the same dash as "this is FPM" and enable
+# opcache.preload on a process that discards it at exit (D14/D22).
 #
-# The fix is TWO changes that must land together, or 🧭 4 breaks:
-#   1. images/cli/Dockerfile ships its own docker-php-entrypoint prepending `php`.
-#   2. bin/entrypoint.sh's `-*) launched=php-fpm` mapping stops being true for
-#      that image and must follow, or a dash-invoked CLI command gets classified
-#      as FPM and silently enables opcache.preload - the exact per-process
-#      preload waste D14/🧭 4 exists to prevent.
-# Both need a structure-test assertion in tests/structure/cli.yaml.
+# Resolved in bin/entrypoint.sh rather than by forking upstream's script per
+# image, which would leave a copy to drift on the next base bump. The entrypoint
+# does the prepend ITSELF, from LARAOCI_DEFAULT_BINARY above, so upstream's line
+# sees an argv that no longer begins with a dash and can never fire. The same
+# variable decides the preload classification, so the binary and the gate read
+# one value and cannot disagree.
+#
+# Verified against the real upstream script: LARAOCI_DEFAULT_BINARY=php makes a
+# dash-invoked command report (cli), and with the variable unset - this image
+# before M2 - it still reports (fpm-fcgi). tests/structure/cli.yaml pins both
+# halves on the image where getting it wrong would matter.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/laraoci-entrypoint"]
 CMD ["php", "-v"]

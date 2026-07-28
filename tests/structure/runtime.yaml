@@ -33,6 +33,13 @@ metadataTest:
       value: "1"
     - key: MAGICK_TMPDIR
       value: /tmp
+    # 🧭 1. Not a §6.4 default but a mechanism: laraoci-entrypoint reads it for
+    # the binary a dash-first argument means AND for the preload gate. php-fpm
+    # is right here (D18) and is what cli/queue/scheduler/builder override. If
+    # this ever silently becomes `php` on runtime, `docker run <runtime> -v`
+    # stops starting FPM and the M1 behaviour changes under everyone.
+    - key: LARAOCI_DEFAULT_BINARY
+      value: php-fpm
 
 fileExistenceTests:
   - name: tini is present (D9)

@@ -162,3 +162,43 @@ teardown() {
   after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l)"
   [ "$after" -le "$before" ]
 }
+
+@test "entrypoint: a dash-first argument prepends the image's default binary (🧭 1)" {
+  export LARAOCI_DEFAULT_BINARY=php
+  run bin/entrypoint.sh -v
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"handoff: php -v"* ]]
+}
+
+@test "entrypoint: a dash-first argument on an fpm image still means php-fpm (🧭 1)" {
+  export LARAOCI_DEFAULT_BINARY=php-fpm
+  run bin/entrypoint.sh -v
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"handoff: php-fpm -v"* ]]
+}
+
+@test "entrypoint: an unset default binary behaves exactly as before (🧭 1)" {
+  unset LARAOCI_DEFAULT_BINARY
+  run bin/entrypoint.sh -v
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"handoff: php-fpm -v"* ]]
+}
+
+@test "entrypoint: a dash-invoked CLI command does not enable preload (🧭 1, D22)" {
+  export LARAOCI_DEFAULT_BINARY=php
+  export PHP_OPCACHE_PRELOAD=/usr/local/share/laraoci/preload.php
+  run bin/entrypoint.sh -r 'echo 1;'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not an FPM process"* ]]
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci-preload.ini"
+  [ -z "$output" ]
+}
+
+@test "entrypoint: a dash-invoked fpm command still enables preload (🧭 1)" {
+  export LARAOCI_DEFAULT_BINARY=php-fpm
+  export PHP_OPCACHE_PRELOAD=/usr/local/share/laraoci/preload.php
+  run bin/entrypoint.sh --nodaemonize
+  [ "$status" -eq 0 ]
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci-preload.ini"
+  [[ "$output" == "opcache.preload = /usr/local/share/laraoci/preload.php" ]]
+}
