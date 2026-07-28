@@ -27,7 +27,7 @@ render() {
 
   [ -f "$template" ] || die "template $template not found"
 
-  allowlist="$(grep -o '\${[A-Za-z_][A-Za-z0-9_]*}' "$template" | sort -u | tr '\n' ' ' || true)"
+  allowlist="$(grep -o "\${[A-Za-z_][A-Za-z0-9_]*}" "$template" | sort -u | tr '\n' ' ' || true)"
 
   # A variable that is unset or empty would render as a blank directive, which
   # PHP accepts and silently misconfigures. Fail instead.
@@ -63,7 +63,7 @@ render() {
 
   envsubst "$allowlist" <"$template" >"$tmp"
 
-  if grep -q '\${' "$tmp"; then
+  if grep -q "\${" "$tmp"; then
     die "unsubstituted placeholders remain after rendering $template"
   fi
 

@@ -56,17 +56,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Compute image reference
-        id: meta
-        env:
-          IMAGE: ${{ inputs.image }}
-          PHP: ${{ inputs.php }}
-          DEBIAN: ${{ inputs.debian }}
-        run: |
-          set -euo pipefail
-          echo "image_ref=ghcr.io/laraoci/${IMAGE}:${PHP}-${DEBIAN}" >> "$GITHUB_OUTPUT"
-
+        # DRIVER IS LOAD-BEARING (🧭 5). Every image below `runtime` begins
+        # `FROM ghcr.io/laraoci/<parent>:<php>-<suite>`, a reference that exists
+        # in no registry until the release path pushes one. On the load path the
+        # parents are therefore built into the local daemon by
+        # bin/build-chain.sh - and the docker-container driver this action
+        # creates by default has its OWN store and cannot see the daemon's
+        # images, so the child's FROM fails with a bare "not found" that reads
+        # like a registry outage. The `docker` driver IS the daemon's BuildKit,
+        # so it resolves the just-built tag with no registry involved.
+        # Reproduced both ways before this was written.
+        #
+        # The push path keeps docker-container, which is what supports the GHA
+        # cache and, in M4, multi-platform manifests. There the parents come
+        # from GHCR like any other reference and the ordering is a `needs:`
+        # problem for the release workflow rather than a driver problem.
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver: ${{ inputs.push && 'docker-container' || 'docker' }}
 
       - name: Log in to GHCR
         if: ${{ inputs.push }}
@@ -76,15 +83,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install yq (mikefarah)
+        # The registry comes from config/images.yml rather than from a literal.
+        # It used to be hardcoded, which was harmless while nothing else derived
+        # it - but PARENT_REF now does, and a tag and a parent reference that
+        # disagree about the registry would produce a leg that builds the wrong
+        # thing and says the right thing. One source, both uses.
+      - name: Compute image reference
+        id: meta
+        env:
+          IMAGE: ${{ inputs.image }}
+          PHP: ${{ inputs.php }}
+          DEBIAN: ${{ inputs.debian }}
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          bin/fetch-tool.sh \
-            --url https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 \
-            --sha256 fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 \
-            --dest "$HOME/.local/bin/yq"
+          registry="$(yq -r '.defaults.registry' config/images.yml)"
+          echo "image_ref=${registry}/${IMAGE}:${PHP}-${DEBIAN}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve identity from config/images.yml (D8)
         id: identity
@@ -113,6 +126,60 @@ jobs:
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
 
+        # BUILD ARGS ARE COMPOSED, NOT LISTED (🧭 5). A child image declares
+        # PARENT_REF and does not declare BASE_DIGEST; the root is the other way
+        # round. Passing both to both would make BuildKit warn about an unused
+        # build argument on every leg, and a warning that is always present is a
+        # warning nobody reads. PARENT_REF is passed explicitly rather than left
+        # to the Dockerfile's default so that config/images.yml stays the source
+        # of the registry, and so M4 can pin the parent by digest here.
+      - name: Compose build arguments
+        id: args
+        env:
+          IMAGE: ${{ inputs.image }}
+          PHP: ${{ inputs.php }}
+          DEBIAN: ${{ inputs.debian }}
+          BASE_DIGEST: ${{ steps.oci.outputs.base_digest }}
+          USER_NAME: ${{ steps.identity.outputs.name }}
+          USER_UID: ${{ steps.identity.outputs.uid }}
+          USER_GID: ${{ steps.identity.outputs.gid }}
+        run: |
+          set -euo pipefail
+          registry="$(yq -r '.defaults.registry' config/images.yml)"
+          # strenv, not string interpolation: the image name reaches a query, a
+          # shell command line and a registry reference, and this is the one
+          # form that never lets it be read as syntax.
+          parent="$(yq -r '.images[strenv(IMAGE)].parent // ""' config/images.yml)"
+          {
+            echo 'args<<LARAOCI_EOF'
+            echo "PHP_VERSION=${PHP}"
+            echo "DEBIAN_RELEASE=${DEBIAN}"
+            echo "USER_NAME=${USER_NAME}"
+            echo "USER_UID=${USER_UID}"
+            echo "USER_GID=${USER_GID}"
+            if [ -n "$parent" ]; then
+              echo "PARENT_REF=${registry}/${parent}:${PHP}-${DEBIAN}"
+            else
+              echo "BASE_DIGEST=@${BASE_DIGEST}"
+            fi
+            echo 'LARAOCI_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+        # The ancestors have to exist in the daemon before the target's FROM is
+        # resolved. Unconditional for any image: it is a no-op for the graph
+        # root, so there is no `if` here to get out of step with the graph.
+        # Ancestors are built without labels and without a resolved base digest
+        # - they are scaffolding for this leg, not artifacts. The one that gets
+        # published is always built by the step below, on its own leg.
+      - name: Build the ancestor chain (🧭 5)
+        if: ${{ !inputs.push }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          PHP: ${{ inputs.php }}
+        run: |
+          set -euo pipefail
+          bin/build-chain.sh --image "$IMAGE" --php "$PHP" --ancestors-only
+
       - name: Reject a multi-platform build that cannot be loaded
         if: ${{ !inputs.push }}
         env:
@@ -137,13 +204,7 @@ jobs:
           push: ${{ inputs.push }}
           load: ${{ !inputs.push }}
           tags: ${{ steps.meta.outputs.image_ref }}
-          build-args: |
-            PHP_VERSION=${{ inputs.php }}
-            DEBIAN_RELEASE=${{ inputs.debian }}
-            BASE_DIGEST=@${{ steps.oci.outputs.base_digest }}
-            USER_NAME=${{ steps.identity.outputs.name }}
-            USER_UID=${{ steps.identity.outputs.uid }}
-            USER_GID=${{ steps.identity.outputs.gid }}
+          build-args: ${{ steps.args.outputs.args }}
           labels: |
             org.opencontainers.image.title=laraoci/${{ inputs.image }}
             org.opencontainers.image.description=${{ steps.oci.outputs.description }}
@@ -155,11 +216,23 @@ jobs:
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.base.name=${{ steps.oci.outputs.base_name }}
             org.opencontainers.image.base.digest=${{ steps.oci.outputs.base_digest }}
-          # PR legs READ the cache but must never WRITE it: Actions cache entries
-          # written from a PR branch are restorable by workflows on the default
-          # branch, so an unmerged PR could otherwise seed layers that a later
-          # release build ships.
-          cache-from: type=gha
+          # PR legs must never WRITE the cache: Actions cache entries written
+          # from a PR branch are restorable by workflows on the default branch,
+          # so an unmerged PR could otherwise seed layers that a later release
+          # build ships.
+          #
+          # They no longer READ it either, and that is a consequence of 🧭 5
+          # rather than a preference: the gha cache backend needs the
+          # docker-container driver, and the load path runs on the docker driver
+          # so that a child can resolve the parent this leg just built. It costs
+          # nothing today - cache-to has always been gated on push, and nothing
+          # has ever pushed, so the import has never had an entry to find. It
+          # will cost something once M4 starts writing the cache on release
+          # builds. If PR build time becomes the complaint at that point, the
+          # escape hatch is 🧭 5's option (b): a registry:2 service on the job,
+          # which lets the container driver keep both the cache and a resolvable
+          # parent. That trade is deliberately not pre-paid here.
+          cache-from: ${{ inputs.push && 'type=gha' || '' }}
           cache-to: ${{ inputs.push && format('type=gha,mode={0}', inputs.cache_mode) || '' }}
 
       - name: Assert the required labels are present (§11)

@@ -3,6 +3,10 @@ defaults:
   registry: ghcr.io/laraoci
   debian: trixie
   platforms: [linux/amd64]
+  # bin/matrix.sh never reads this, but bin/build-chain.sh refuses to guess an
+  # identity (D8): a config that does not state one must fail rather than let
+  # the Dockerfiles' ARG defaults become a second source of truth.
+  user: { name: laravel, uid: 1000, gid: 1000 }
 php:
   # The §3.1 transition mechanism: one version held on the older suite.
   "8.3": { status: supported, debian: bookworm }
