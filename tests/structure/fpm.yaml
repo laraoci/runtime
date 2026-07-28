@@ -57,6 +57,30 @@ fileExistenceTests:
     gid: 1000
     permissions: '-rw-r--r--'
 
+  # LOCI-025. cgi-fcgi speaks FastCGI straight to the pool, so the HEALTHCHECK
+  # exercises the exact socket Nginx will use rather than a side channel - there
+  # is no HTTP server in this image to curl. It is the only reason libfcgi-bin
+  # is installed (41 KB, plus 92 KB for libfcgi0t64, measured with dpkg-query),
+  # and it lands here rather than in runtime because no other image has a socket
+  # to ping.
+  #
+  # The mode matters as much as the path: HEALTHCHECK runs as the image USER,
+  # which is laravel, so a binary installed without its world-execute bit would
+  # leave every fpm container permanently `unhealthy` for a reason that never
+  # appears in the application logs.
+  #
+  # This is HALF the assertion. container-structure-test cannot see a HEALTHCHECK
+  # at all - metadataTest has no field for one, the same gap that pushed the stop
+  # signal into .github/workflows/build.yml - so the instruction's presence and
+  # its transition to `healthy` are verified by hand against a running container
+  # (Task 6 Step 4). What this test protects is the ingredient: an apt change
+  # that drops the package would otherwise surface only as a health status
+  # nobody checks.
+  - name: cgi-fcgi is present for the healthcheck (LOCI-025)
+    path: /usr/bin/cgi-fcgi
+    shouldExist: true
+    permissions: '-rwxr-xr-x'
+
 commandTests:
   # ------------------------------------------------------------------------
   # TRAP 2 - THE UPSTREAM AUDIT. The official -fpm image already ships

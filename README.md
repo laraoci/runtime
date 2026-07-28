@@ -23,7 +23,7 @@ weekly rebuilds.
 ## Repository layout
 
 - `config/images.yml` - the single source of truth; CI derives the build matrix from it.
-- `bin/` - `matrix.sh`, `affected.sh`, `size-check.sh`, `structure-test.sh`, `fetch-tool.sh`, and the container entrypoint.
+- `bin/` - `matrix.sh`, `affected.sh`, `size-check.sh`, `structure-test.sh`, `fetch-tools.sh`, and the container entrypoint.
 - `images/` - per-image Dockerfiles.
 - `tests/` - bats unit tests, structure tests, smoke tests, fixtures.
 - `.github/workflows/` - `lint`, `build` (reusable), `pr`.

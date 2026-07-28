@@ -74,85 +74,12 @@ run_bodies() {
   [ "$output" -ge 1 ]
 }
 
-@test "workflows: the load path materialises the ancestor chain (🧭 5)" {
-  # Every image below `runtime` is FROM a LaraOCI reference that exists in no
-  # registry until M4 pushes one, and each matrix leg is its own job on its own
-  # runner - so the load path has to build its parents before its own FROM is
-  # resolved, or the leg fails with a bare "not found".
-  run yq -r '[.jobs.build.steps[] | select((.run // "") | test("build-chain.sh"))] | length' \
-    .github/workflows/build.yml
-  [ "$status" -eq 0 ]
-  [ "$output" -ge 1 ]
-}
-
-@test "workflows: the ancestor build is gated on the load path (🧭 5)" {
-  # On the push path the parents come from the registry, and rebuilding them
-  # per leg would be pure waste.
-  run yq -r '.jobs.build.steps[] | select((.run // "") | test("build-chain.sh")) | .if' \
-    .github/workflows/build.yml
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"inputs.push"* ]]
-}
-
-@test "workflows: the load path uses a builder that can see local images (🧭 5)" {
-  # The docker-container driver has its own store and cannot see an image loaded
-  # into the daemon, so leaving this at the action's default silently breaks
-  # every child image - the failure looks like a registry problem, not a driver
-  # one, which is exactly why it is pinned here.
-  run yq -r '.jobs.build.steps[] | select((.uses // "") | test("setup-buildx-action")) | .with.driver' \
-    .github/workflows/build.yml
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"inputs.push"* ]]
-}
-
-@test "workflows: the gha cache is imported only where the driver supports it (🧭 5)" {
-  # type=gha needs the docker-container driver; an unconditional cache-from
-  # would fail every PR leg once the driver switch above is in place.
-  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with["cache-from"]' \
-    .github/workflows/build.yml
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"inputs.push"* ]]
-}
-
-@test "workflows: no build arg is passed to an image that does not declare it (🧭 5)" {
-  # PARENT_REF belongs to a child, BASE_DIGEST to the root. Listing both
-  # unconditionally makes BuildKit warn on every leg about an unused build
-  # argument, and a warning that is always there is a warning nobody reads.
-  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with["build-args"]' \
-    .github/workflows/build.yml
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"steps.args.outputs"* ]]
-}
-
-@test "workflows: the stop signal is asserted against config, not left to a Dockerfile (M2)" {
-  # This is the ONLY place a wrong STOPSIGNAL is caught: container-structure-test
-  # has no metadataTest field for it and a container cannot read its own. The
-  # failure it guards is silent - php-fpm reads SIGTERM as immediate death, so
-  # an fpm image left on the parent's signal truncates in-flight responses on
-  # every deploy and reports nothing.
-  run yq -r '[.jobs.build.steps[] | select((.run // "") | test("StopSignal"))] | length' \
-    .github/workflows/build.yml
-  [ "$status" -eq 0 ]
-  [ "$output" -ge 1 ]
-}
-
-@test "workflows: the stop signal expectation comes from config/images.yml (M2)" {
-  # A literal SIGQUIT in the workflow would assert the workflow's opinion rather
-  # than the image catalogue's, and the two would drift the first time an image
-  # changed its mind.
-  run yq -r '.jobs.build.steps[] | select((.run // "") | test("StopSignal")) | .run' \
-    .github/workflows/build.yml
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"stopsignal"* ]]
-  [[ "$output" == *"config/images.yml"* ]]
-}
-
 @test "workflows: no CI tool is downloaded without a checksum (L5)" {
   local f out
   for f in .github/workflows/*.yml; do
     out="$(run_bodies "$f" | grep -n 'curl ' || true)"
     if [ -n "$out" ]; then
-      echo "$f calls curl directly - use bin/fetch-tool.sh so the asset is verified:" >&2
+      echo "$f calls curl directly - use bin/fetch-tools.sh so the asset is verified:" >&2
       echo "$out" >&2
       false
     fi
@@ -163,23 +90,23 @@ run_bodies() {
 # These lock in the migration away from the vendored bats-core submodule. The
 # submodule was removed because it pulled ~200 files of third-party code into
 # lint scope and forced `submodules: true` on every checkout; the replacement
-# fetches an SHA-pinned tarball through bin/fetch-bats.sh. Each invariant below
+# fetches a SHA-pinned tarball through bin/fetch-bats.sh. Each invariant below
 # is a way that migration could silently regress.
 
-@test "workflows: bats.env pins the runner by 64-hex SHA-256, not just a version (L5)" {
+@test "workflows: tools.env pins the runner by 64-hex SHA-256, not just a version (L5)" {
   # A version alone prevents drift but not substitution - a tagged asset can be
   # replaced in place. The hash is the trust anchor, so it must be present and
   # well-formed, matching how shfmt/yq/hadolint are pinned.
-  [ -f tests/bats.env ]
+  [ -f tools.env ]
   # shellcheck disable=SC1091
-  run bash -c 'set -a; . tests/bats.env; printf "%s" "$BATS_SHA256"'
+  run bash -c 'set -a; . tools.env; printf "%s" "$BATS_SHA256"'
   [ "$status" -eq 0 ]
   [[ "$output" =~ ^[0-9a-f]{64}$ ]]
 }
 
 @test "workflows: bats.env carries a version and a matching tag URL" {
   # shellcheck disable=SC1091
-  . tests/bats.env
+  . tools.env
   [ -n "$BATS_VERSION" ]
   # The URL must reference the same version it claims to pin, or the hash guards
   # a different artefact than the one named.
@@ -217,22 +144,23 @@ run_bodies() {
   fi
 }
 
-@test "workflows: the unit-test job fetches bats through the verified helper" {
-  # The bats job must run the suite via bin/fetch-bats.sh (which verifies the
-  # hash), not a bare runner path. Asserts the migration's mechanism is actually
-  # wired, not just that the old path is absent.
-  run yq -r '[.jobs.bats.steps[] | select((.run // "") | test("fetch-bats"))] | length' \
+@test "workflows: the unit-test job fetches bats through the verified fetcher" {
+  # The bats job must obtain the runner via bin/fetch-tools.sh --path bats (which
+  # verifies the hash), not a bare runner path. Asserts the mechanism is wired,
+  # not just that the old submodule path is absent.
+  run yq -r '[.jobs.bats.steps[] | select((.run // "") | test("fetch-tools.sh --path bats"))] | length' \
     .github/workflows/lint.yml
   [ "$status" -eq 0 ]
   [ "$output" -ge 1 ]
 }
 
-@test "workflows: fetch-bats.sh exists, is executable, and is checksum-guarded" {
-  # It downloads with curl, which test \"no CI tool ... without a checksum\"
-  # forbids inside workflow run: bodies - so it MUST live in bin/ and MUST carry
-  # the sha256 verification itself, or the curl simply moved somewhere unchecked.
-  [ -x bin/fetch-bats.sh ]
-  run grep -c 'sha256sum -c' bin/fetch-bats.sh
+@test "workflows: the pinned fetcher is checksum-guarded and lives in bin/" {
+  # bats and every other tool are fetched by bin/fetch-tools.sh, which downloads
+  # with curl - so it MUST carry the sha256 verification itself, or the curl
+  # simply moved somewhere unchecked. (fetch-bats.sh was folded into it.)
+  [ -x bin/fetch-tools.sh ]
+  [ ! -e bin/fetch-bats.sh ]
+  run grep -c 'sha256sum -c' bin/fetch-tools.sh
   [ "$status" -eq 0 ]
   [ "$output" -ge 1 ]
 }

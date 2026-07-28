@@ -8,7 +8,7 @@
 
 setup() {
   # shellcheck source=/dev/null
-  . ../../docs/files/tools.env
+  . tools.env
 }
 
 @test "tools: env declares the expected tool set" {
@@ -89,4 +89,20 @@ setup() {
   run grep -c 'sha256sum -c' bin/fetch-tools.sh
   [ "$status" -eq 0 ]
   [ "$output" -ge 1 ]
+}
+
+@test "tools: fetch-tools.sh is the ONLY fetcher (no second pinning path)" {
+  # The whole point of tools.env is one fetch mechanism. A reappearing
+  # fetch-tool.sh or fetch-bats.sh would be a second, separately-pinned path -
+  # exactly the drift this consolidation removed.
+  [ ! -e bin/fetch-tool.sh ]
+  [ ! -e bin/fetch-bats.sh ]
+}
+
+@test "tools: nothing calls a removed fetcher" {
+  # Catches a workflow, Makefile, or script still invoking the old names.
+  run grep -rn --include=*.yml --include=*.sh --include=Makefile \
+    -e 'fetch-tool\.sh' -e 'fetch-bats\.sh' \
+    .github Makefile bin
+  [ "$status" -eq 1 ]
 }

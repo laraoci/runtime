@@ -288,10 +288,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          bin/fetch-tool.sh \
-            --url https://github.com/GoogleContainerTools/container-structure-test/releases/download/v1.22.1/container-structure-test-linux-amd64 \
-            --sha256 fa35e89512a8978585f76cf41397956d2e3a30c62c2ad3fb857b1597074d14ca \
-            --dest "$HOME/.local/bin/container-structure-test"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" container-structure-test
 
       # No-ops with a message for any image that has no tests/structure/<name>.yaml
       # yet, so M2 and M3 gain coverage by adding a file rather than editing CI.

@@ -50,6 +50,10 @@ COPY --chmod=0644 config/php/zz-laraoci-fpm.conf.template /usr/local/share/larao
 # ---------------------------------------------------------------------------
 # RUN 1 - root work.
 #
+# libfcgi-bin is 41 KB, plus 92 KB for libfcgi0t64 - measured with dpkg-query,
+# against the ~200 KB §7.3 estimates. It exists solely for the HEALTHCHECK; it
+# lands here and not in runtime because no other image has a socket to ping.
+#
 # The rendered pool file is pre-created with laravel ownership for the same
 # reason runtime pre-creates the two ini files: php-fpm.d stays root-owned and
 # the entrypoint gets write access to exactly one file in it, not to the
@@ -64,6 +68,10 @@ COPY --chmod=0644 config/php/zz-laraoci-fpm.conf.template /usr/local/share/larao
 # with a different USER_NAME must fail loudly here instead.
 USER root
 RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libfcgi-bin; \
+    rm -rf /var/lib/apt/lists/*; \
+    test -x /usr/bin/cgi-fcgi; \
     grep -q "^user = ${USER_NAME}\$" /usr/local/share/laraoci/templates/zz-laraoci-fpm.conf.template; \
     grep -q "^group = ${USER_NAME}\$" /usr/local/share/laraoci/templates/zz-laraoci-fpm.conf.template; \
     install -o "${USER_UID}" -g "${USER_GID}" -m 0644 /dev/null \
@@ -131,6 +139,13 @@ RUN set -eux; \
 # assertion lives in .github/workflows/build.yml against images.fpm.stopsignal
 # in config/images.yml.
 STOPSIGNAL SIGQUIT
+
+# cgi-fcgi speaks FastCGI straight to the pool, so the check exercises the exact
+# socket Nginx will use rather than a side channel. 15 s start-period covers the
+# pool warming up; three failures at a 10 s interval mark it unhealthy in ~30 s,
+# which is inside a typical orchestrator's patience and outside a GC pause.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
+  CMD ["sh", "-c", "SCRIPT_NAME=/fpm-ping SCRIPT_FILENAME=/fpm-ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000 | grep -q '^pong'"]
 
 # Exec form (§6.2), and bare `php-fpm` rather than a flag-laden invocation:
 # daemonize = no and the log redirections already come from upstream's

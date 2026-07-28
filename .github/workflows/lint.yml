@@ -19,10 +19,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          bin/fetch-tool.sh \
-            --url https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64 \
-            --sha256 fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1 \
-            --dest "$HOME/.local/bin/shfmt"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" shfmt
       - name: shellcheck
         run: |
           set -euo pipefail
@@ -49,7 +46,7 @@ jobs:
       - name: Run unit tests
         run: |
           set -euo pipefail
-          bats_bin="$(bin/fetch-bats.sh --path)"
+          bats_bin="$(bin/fetch-tools.sh --path bats)"
           "$bats_bin" tests/unit
 
   dockerfiles:
@@ -61,10 +58,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          bin/fetch-tool.sh \
-            --url https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-linux-x86_64 \
-            --sha256 6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47 \
-            --dest "$HOME/.local/bin/hadolint"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" hadolint
       - name: hadolint
         run: |
           set -euo pipefail

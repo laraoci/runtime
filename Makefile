@@ -15,9 +15,9 @@
 # semantics differ and would hide errors in a multi-line recipe).
 .DEFAULT_GOAL := help
 
-# bin/fetch-bats.sh fetches the SHA-pinned runner and prints its path. Assigned
-# with = (recursive), not :=, so `make help` does not trigger a bats download.
-BATS = $$(bin/fetch-bats.sh --path)
+# fetch-tools.sh --path ensures the pinned bats is present and prints its path.
+# Assigned with = (recursive), not :=, so `make help` triggers no download.
+BATS = $$(bin/fetch-tools.sh --path bats)
 
 # All pinned linters/formatters land here via `make tools`. Recipes call the
 # cached binaries so local runs use the same pinned versions as CI.
@@ -37,7 +37,7 @@ tools: ## Fetch all pinned dev tools (shfmt, yq, hadolint, actionlint, bats)
 	bin/fetch-tools.sh
 
 test: ## Run the unit test suite under the pinned bats
-	$(BATS)/bats tests/unit
+	$(BATS) tests/unit
 
 lint: ## shellcheck every tracked shell script
 	shellcheck -S warning $$(git ls-files '*.sh')
@@ -57,8 +57,8 @@ affected: ## Images affected since BASE (default origin/main)
 sizes: ## Report image sizes against their budgets (advisory)
 	bin/size-check.sh --report
 
-structure: ## Run container-structure-test for IMAGE (e.g. make structure IMAGE=runtime REF=ghcr.io/laraoci/fpm:8.4-trixie)
-	bin/structure-test.sh --image $(IMAGE) --ref $(REF)
+structure: ## Run container-structure-test for IMAGE (e.g. make structure IMAGE=runtime)
+	bin/structure-test.sh --image $(IMAGE)
 
 actions: ## Lint GitHub Actions workflows with pinned actionlint
 	$(TOOLS_BIN)/actionlint
