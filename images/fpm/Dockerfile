@@ -38,12 +38,19 @@ ARG USER_GID=1000
 # They live on the image rather than in the template's text so that a consumer
 # can retune the pool with `-e PHP_FPM_MAX_CHILDREN=40` - the whole reason the
 # pool is rendered at start rather than shipped as a static file.
+#
+# PHP_FPM_PROCESS_CONTROL_TIMEOUT is the one that makes STOPSIGNAL SIGQUIT
+# below do anything at all - see the template's own [global] block for the
+# measurements. It is a ceiling, not a delay: an idle container still stops in
+# ~0.2s. 10s matches Docker's default stop grace, and a consumer who raises it
+# must raise the orchestrator's grace period to match.
 ENV PHP_FPM_PM=dynamic \
     PHP_FPM_MAX_CHILDREN=20 \
     PHP_FPM_START_SERVERS=4 \
     PHP_FPM_MIN_SPARE_SERVERS=2 \
     PHP_FPM_MAX_SPARE_SERVERS=6 \
-    PHP_FPM_MAX_REQUESTS=500
+    PHP_FPM_MAX_REQUESTS=500 \
+    PHP_FPM_PROCESS_CONTROL_TIMEOUT=10s
 
 COPY --chmod=0644 config/php/zz-laraoci-fpm.conf.template /usr/local/share/laraoci/templates/
 
@@ -97,6 +104,12 @@ USER ${USER_NAME}
 # image to add a file to that glob, and the failure mode of getting the [www]
 # header wrong is not a parse error but a silent reassignment of these values
 # into whichever section was open.
+#
+# process_control_timeout is in the list for the opposite reason: it is the one
+# directive here that belongs to [global] rather than [www], so it is the canary
+# for our two section headers being the wrong way round. The trailing 's' is
+# part of the assertion - php-fpm echoes the suffix verbatim rather than
+# normalising it, and without it the grep would match 10m just as happily.
 RUN set -eux; \
     /usr/local/bin/laraoci-entrypoint true; \
     php-fpm -tt >/tmp/fpm-tt.log 2>&1; \
@@ -108,6 +121,7 @@ RUN set -eux; \
       'ping.path = /fpm-ping' \
       'ping.response = pong' \
       'pm.status_path = /fpm-status' \
+      'process_control_timeout = 10s' \
       'clear_env = no' \
       'daemonize = no' \
       'catch_workers_output = yes' \

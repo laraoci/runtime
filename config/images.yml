@@ -48,25 +48,42 @@ size_budgets:
   # run `--report` and always exit 0; the enforcing form (no --report, exit 1 on
   # overrun) is wired into the release path in M4 per spec §9.2.
   #
-  # `runtime` is MEASURED, not a guess - see docs/size-report-m1.md for the three
-  # per-version numbers, the tool, the date and the host arch. Frozen per D17.
-  # Formula: max(8.3, 8.4, 8.5) + 10% headroom, rounded up to the nearest 5 MB.
-  # Measured 2026-07-27 on linux/amd64: 227.6 / 230.5 / 232.6 -> 260.
-  # The headroom absorbs Debian package drift between the weekly rebuilds (§9.3).
+  # The four below are MEASURED, not guesses. One formula for all of them, so
+  # the numbers stay comparable across milestones:
   #
-  # Note the placeholder this replaced was 220, which every supported version
-  # already exceeded. Size grows monotonically with the PHP minor, so 8.5 sets
-  # the budget and a future 8.6 should be expected to raise it again.
+  #   ceil(max(8.3, 8.4, 8.5) x 1.10 / 5) x 5
+  #
+  # The 10% headroom absorbs Debian package drift between the weekly rebuilds
+  # (§9.3); the rounding to 5 MB keeps the committed number readable. Frozen per
+  # D17. Size grows monotonically with the PHP minor on every image measured so
+  # far, so 8.5 sets each budget and a future 8.6 should be expected to raise it.
+  #
+  #   image    date        arch          8.3      8.4      8.5   -> budget
+  #   runtime  2026-07-27  linux/amd64  227.6    230.5    232.6     260
+  #   cli      2026-07-28  linux/amd64  227.55   230.53   232.62    260
+  #   fpm      2026-07-28  linux/amd64  228.02   230.99   233.08    260
+  #   builder  2026-07-28  linux/amd64  294.03   297.00   299.11    330
+  #
+  # runtime's three numbers and the Ghostscript/-extra deltas behind them are in
+  # docs/size-report-m1.md; the other nine, and what each image adds over its
+  # parent, are in docs/size-report-m2.md.
+  #
+  # cli AND fpm LANDING ON runtime's OWN 260 IS THE CORRECT OUTCOME, not a
+  # copy-paste error. cli adds ENV and CMD - zero bytes, and its measurements
+  # differ from runtime's only in the third significant figure. fpm adds
+  # libfcgi-bin, libfcgi0t64 and one rendered pool file, together about 0.5 MB
+  # compressed. Both are far inside the rounding step, so all three round
+  # identically. The placeholders these replaced (225 and 235) were below the
+  # parent they descend from, which is impossible by construction.
   runtime: 260
+  cli: 260
+  fpm: 260
+  builder: 330
   #
-  # The other five are still PLACEHOLDERS. Only `runtime` exists to measure in
-  # M1; M2 freezes cli/fpm/builder and M3 freezes queue/scheduler the same way.
-  # None of them can legitimately be lower than `runtime` - they all descend
-  # from it - so these numbers are known to be wrong and will fail the moment
-  # those images are built. That is deliberate: a red build is the reminder.
-  cli: 225
-  fpm: 235
-  builder: 500
+  # queue and scheduler are still PLACEHOLDERS - M3 builds and freezes them the
+  # same way. Neither can legitimately be lower than `cli`, which they descend
+  # from, so these numbers are known to be wrong and will fail the moment those
+  # images are built. That is deliberate: a red build is the reminder.
   queue: 225
   scheduler: 225
 

@@ -35,6 +35,11 @@ metadataTest:
       value: 256M
     - key: PHP_MAX_EXECUTION_TIME
       value: "30"
+    # The drain ceiling (§7.3). Asserted as metadata as well as in the rendered
+    # pool because this is the one an operator has to reason about next to their
+    # orchestrator's stop grace, and `docker inspect` is where they will look.
+    - key: PHP_FPM_PROCESS_CONTROL_TIMEOUT
+      value: 10s
 
 fileExistenceTests:
   # D6 covers fpm as much as cli: this image runs application code, not
@@ -181,18 +186,44 @@ commandTests:
         value: "40"
     expectedOutput: ['^pm\.max_children=40\n$']
 
-  # Claim three, first half: ONE [www] HEADER, and it is ours. FPM section
-  # headers persist across file boundaries, so a pool file without its own
-  # header inherits whatever section was open when the previous file ended.
-  # zz-docker.conf does end with a [www] line today, but upstream documents that
-  # as backwards compatibility "will be removed in 8.6+" - the day it goes, an
-  # unheadered file drops these directives into [global], where php-fpm rejects
-  # some and ignores the rest. A second header would be just as wrong: it opens
-  # a duplicate pool definition.
-  - name: the pool file opens exactly one [www] section (trap 2, §7.3)
+  # Claim one and a half: THE DRAIN. process_control_timeout is what makes
+  # STOPSIGNAL SIGQUIT mean anything - measured, with FPM's default of 0 the
+  # master takes the graceful code path and then exits without waiting, so an
+  # in-flight response is truncated exactly as SIGTERM truncates it.
+  #
+  # Read separately from the pool values above because it lives in [global], not
+  # [www]: php-fpm refuses to start with it under a pool, so a wrong section here
+  # is a crash rather than a silent misconfiguration. The suffix is reported
+  # verbatim - php-fpm echoes `10s`, it does not normalise to a bare number - so
+  # the assertion is anchored to the exact string. A prefix match would accept
+  # 10m and 100s as happily as 10s.
+  #
+  # The behaviour this enables cannot be asserted from one container with no
+  # network, so the drain itself belongs to the smoke suite (🧭 2). This is the
+  # static half: the directive reached [global] with the right value.
+  - name: the graceful-shutdown ceiling is set in [global] (§7.3, trap 1)
     command: sh
-    args: ["-c", "grep -c '^\\[' /usr/local/etc/php-fpm.d/zz-laraoci.conf; grep -c '^\\[www\\]' /usr/local/etc/php-fpm.d/zz-laraoci.conf"]
-    expectedOutput: ['^1\n1\n$']
+    args: ["-c", "php-fpm -tt 2>&1 | sed -n 's/.*[[:space:]]\\(process_control_timeout\\) = \\(.*\\)/\\1=\\2/p' | sort -u"]
+    expectedOutput: ['^process_control_timeout=10s\n$']
+
+  # Claim three, first half: TWO SECTION HEADERS, in this order, and exactly one
+  # [www]. FPM section headers persist across file boundaries, so a pool file
+  # without its own header inherits whatever section was open when the previous
+  # file ended. zz-docker.conf does end with a [www] line today, but upstream
+  # documents that as backwards compatibility "will be removed in 8.6+" - the
+  # day it goes, an unheadered file drops these directives into [global], where
+  # php-fpm rejects some and ignores the rest.
+  #
+  # The ORDER is the assertion that matters now that there are two. [global]
+  # opens the file for process_control_timeout and [www] must close it, because
+  # every directive after [www] is a pool directive and this file is last in the
+  # glob. Reversed, php-fpm refuses to start; duplicated, [www] opens a second
+  # pool definition. Printing the headers themselves rather than counting them
+  # means a failure names what it found.
+  - name: the pool file opens [global] and closes [www], once each (trap 2, §7.3)
+    command: sh
+    args: ["-c", "grep '^\\[' /usr/local/etc/php-fpm.d/zz-laraoci.conf | tr '\\n' ' '"]
+    expectedOutput: ['^\[global\] \[www\] $']
 
   # Claim three, second half: ADDITIVE ONLY. Every name below is already set by
   # upstream's docker.conf or zz-docker.conf, and the audits at the top of this

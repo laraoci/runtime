@@ -15,9 +15,39 @@
 ; drift, so they are asserted instead - statically in tests/structure/fpm.yaml
 ; and behaviourally by the LOCI-030 smoke test.
 ;
+; ---------------------------------------------------------------------------
+; THE DRAIN. This is what makes STOPSIGNAL SIGQUIT in images/fpm/Dockerfile mean
+; anything, and it is a [global] directive - not a pool one - which is why this
+; file opens a [global] section it would otherwise not need. Under [www]
+; php-fpm refuses to start at all.
+;
+; MEASURED, because the milestone doc and spec §7.3 both say the stop signal is
+; sufficient on its own and it is not. Against an in-flight request, with FPM's
+; default process_control_timeout = 0:
+;
+;   signal   pct=0                        pct=10s
+;   SIGQUIT  exits 0.2s, response TRUNCATED   exits 4.9s, response COMPLETE
+;   SIGTERM  exits 0.1s, response truncated   exits 0.2s, response truncated
+;
+; With the default, SIGQUIT takes the graceful CODE PATH - the master logs
+; "Finishing ..." rather than "Terminating ..." - and then exits without waiting
+; for its busy children, truncating exactly as SIGTERM does. The signal alone
+; buys nothing.
+;
+; It is a CEILING, not a delay: an idle container still stops in ~0.2s, and a
+; busy one waits only as long as the request needs. 10s matches Docker's default
+; stop grace, past which `docker stop` sends SIGKILL regardless - a larger
+; default here would be fiction under plain Docker. Consumers running longer
+; requests must raise THIS AND the orchestrator's grace period together
+; (`docker stop -t`, or terminationGracePeriodSeconds on Kubernetes); raising
+; only one of the two silently keeps the shorter of them.
+[global]
+process_control_timeout = ${PHP_FPM_PROCESS_CONTROL_TIMEOUT}
+
 ; The [www] header is load-bearing. FPM section headers persist ACROSS file
 ; boundaries, so without it these directives land in whatever section was open
-; when the previous file ended. zz-docker.conf does end with a [www] line, but
+; when the previous file ended - which, now that this file opens with [global],
+; would be [global] itself. zz-docker.conf does end with a [www] line, but
 ; upstream documents it as backwards compatibility "will be removed in 8.6+" -
 ; inheriting it is exactly the silent breakage trap 2 is about.
 [www]
