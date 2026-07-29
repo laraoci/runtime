@@ -152,3 +152,26 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$output" -ge 1 ]
 }
+
+@test "tools: a multi-tool fetch leaves no temp files behind" {
+  # The header claims one run-level temp file cleaned once on EXIT. It was one
+  # mktemp per download with TMP reassigned each time, so the trap only ever saw
+  # the last - a cold six-tool fetch left five tool binaries in TMPDIR.
+  local tmpdir cache
+  tmpdir="$(mktemp -d)"
+  cache="$(mktemp -d)"
+  TMPDIR="$tmpdir" LARAOCI_TOOLS_DIR="$cache" run bin/fetch-tools.sh shfmt yq
+  [ "$status" -eq 0 ]
+  run bash -c "ls -A '$tmpdir' | wc -l"
+  [ "$output" -eq 0 ]
+  rm -rf "$tmpdir" "$cache"
+}
+
+@test "tools: --list rejects an undeclared tool instead of crashing" {
+  # The --list path dereferenced ${NAME}_VERSION without calling tool_declared,
+  # so an unknown name died with 'NOSUCHTOOL_VERSION: unbound variable' under
+  # set -u rather than the message every other path gives.
+  run bin/fetch-tools.sh --list nosuchtool
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"is not a tool declared in tools.env"* ]]
+}

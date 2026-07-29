@@ -27,14 +27,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN_DIR="${LARAOCI_TOOLS_DIR:-$REPO_ROOT/.cache/tools/bin}"
 SRC_DIR="${LARAOCI_TOOLS_DIR:-$REPO_ROOT/.cache/tools}/src"
 
-# One temp file for the whole run, cleaned once on EXIT. A per-iteration trap
-# (armed and cleared inside the loop) would leave a later failure with no
-# cleanup armed; a single run-level trap over one reused path avoids that.
-TMP=""
-# Must return 0: as an EXIT trap this runs last, so a falsy final command (empty
-# TMP -> the [[ ]] test fails) would become the script's exit status under set -e.
+# ONE temp file for the whole run, created here and cleaned once on EXIT. A
+# per-download mktemp - which is what this was - reassigns TMP and orphans the
+# previous file, so the trap only ever saw the last of them and a cold fetch of
+# every tool left five binaries in TMPDIR. A per-iteration trap has the opposite
+# problem: armed and cleared inside the loop, it leaves a later failure with no
+# cleanup armed.
+TMP="$(mktemp)"
+# Must return 0: as an EXIT trap this runs last, so a falsy final command would
+# become the script's exit status under set -e.
 cleanup() {
-  [[ -n "$TMP" ]] && rm -f "$TMP"
+  rm -f "$TMP"
   return 0
 }
 trap cleanup EXIT
@@ -110,8 +113,10 @@ tool_declared() {
 }
 
 download_verified() {
-  # $1 url, $2 expected sha -> leaves the verified file at $TMP
-  TMP="$(mktemp)"
+  # Truncate rather than mint a new path: TMP belongs to the run, not to this
+  # call. `curl -o` truncates too, but being explicit keeps the ownership rule
+  # readable at the one place that could break it again.
+  : >"$TMP"
   curl -fsSL "$1" -o "$TMP"
   if ! echo "$2  $TMP" | sha256sum -c - >/dev/null 2>&1; then
     echo "error: checksum mismatch for $1" >&2
@@ -212,6 +217,13 @@ fetch_one() {
 
 if [[ "$list_only" == 1 ]]; then
   for t in "${tools_to_do[@]}"; do
+    # tool_declared FIRST: the indirect expansions below are unbound-variable
+    # crashes under set -u for a name that is not in the manifest, where every
+    # other path in this script gives a sentence and exit 2.
+    if ! tool_declared "$t"; then
+      echo "error: '$(tool_bin_name "$t")' is not a tool declared in tools.env" >&2
+      exit 2
+    fi
     v="${t}_VERSION"
     k="${t}_KIND"
     printf '%-24s %s  (%s)\n' "$(tool_bin_name "$t")" "${!v}" "${!k}"
