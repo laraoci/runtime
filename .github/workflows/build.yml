@@ -43,9 +43,15 @@ on:
         description: Image digest
         value: ${{ jobs.build.outputs.digest }}
 
-permissions:
-  contents: read
-  packages: write
+# NO `permissions:` BLOCK HERE, ON PURPOSE. A called workflow's declared
+# permissions must be a SUBSET of what the calling job was granted, so
+# declaring `packages: write` made this workflow uncallable from pr.yml
+# (`contents: read` -> packages: none) and would fail the same way on any fork
+# PR, where the token is capped read-only no matter what the caller asks for.
+# With no block the token is inherited from the calling job, which is the right
+# place for the decision: the PR path never pushes and needs nothing beyond
+# `contents: read`, and the M4 release caller must grant `packages: write` on
+# its own job for the login/push steps below.
 
 jobs:
   build:
