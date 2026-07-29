@@ -117,3 +117,33 @@ jobs:
           fi
 
           exit "$leaked"
+
+  # Stable gate for branch protection over the dynamic smoke matrix. Require THIS
+  # name, never the per-version legs.
+  smoke-required:
+    name: smoke-required
+    needs: [ matrix, smoke ]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    env:
+      # Via env:, not interpolated into run: (repo H1 rule). Trusted enums, but
+      # the standard is honoured without exception.
+      MATRIX_RESULT: ${{ needs.matrix.result }}
+      SMOKE_RESULT: ${{ needs.smoke.result }}
+    steps:
+      - name: Verify the smoke matrix succeeded
+        run: |
+          set -euo pipefail
+          echo "matrix=$MATRIX_RESULT smoke=$SMOKE_RESULT"
+
+          # BOTH must be 'success'. Note the difference from pr-required: here a
+          # 'skipped' smoke is NOT a pass. smoke.yml's matrix guard guarantees at
+          # least one version whenever matrix succeeds, so smoke is skipped ONLY
+          # when matrix failed upstream. Accepting 'skipped' would turn a broken
+          # matrix into a green gate.
+          if [ "$MATRIX_RESULT" != "success" ]; then
+            echo "::error::smoke matrix generation failed"; exit 1
+          fi
+          if [ "$SMOKE_RESULT" != "success" ]; then
+            echo "::error::one or more smoke legs did not pass"; exit 1
+          fi
