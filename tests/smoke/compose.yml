@@ -39,8 +39,26 @@ services:
   # install or npm run build in the fixture directory would seed their vendor/
   # and public/build/ into the volume. LOCI-029 would then "pass" without the
   # builder image doing anything, and would keep passing after a change that
-  # broke it, while CI - checking out a clean tree - failed. The list mirrors
-  # that .gitignore; the two must be changed together.
+  # broke it, while CI - checking out a clean tree - failed.
+  #
+  # The list must cover every GENERATED path, not only the four obvious ones -
+  # which means the nested storage/ and bootstrap/cache .gitignore files as well
+  # as the top-level one. Two that were missed and are now excluded, both
+  # observed being seeded from a real working tree:
+  #
+  #   bootstrap/cache/*.php  Laravel's package-discovery cache. A stale copy is
+  #                          authoritative at boot, so it can mask a discovery
+  #                          failure or name a provider the fresh vendor/ does
+  #                          not contain - the CI-vs-laptop divergence above,
+  #                          with a far less obvious symptom than a missing file.
+  #   storage/logs/*.log     A developer's log carries every exception from every
+  #                          previous run into the volume, so the failure
+  #                          diagnostics print stale errors that have nothing to
+  #                          do with the run that just failed.
+  #
+  # Verify with: git ls-files --others --ignored --exclude-standard
+  #              tests/fixtures/app/
+  # Anything that lists and is not excluded here is a path CI will not have.
   seed:
     profiles: [tools]
     image: ${LARAOCI_REGISTRY:?}/cli:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
@@ -55,6 +73,11 @@ services:
         --exclude=./public/build
         --exclude=./.env
         --exclude=*.sqlite
+        --exclude=./bootstrap/cache/*.php
+        --exclude=./storage/logs/*.log
+        --exclude=./storage/framework/cache/data/*
+        --exclude=./storage/framework/sessions/*
+        --exclude=./storage/framework/views/*
         -cf - .
         | tar -C /var/www/html -xf -
     volumes:
@@ -83,6 +106,22 @@ services:
     working_dir: /var/www/html
     environment:
       LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
+      # A THROWAWAY TEST KEY, not a secret. It is committed on purpose: the
+      # fixture ships no .env (LOCI-030 depends on the environment being the
+      # only source of configuration), and without APP_KEY every web route 500s
+      # in EncryptCookies before it reaches the assertion - which reads as "the
+      # image is broken" rather than "the app is unconfigured". Fixed rather
+      # than generated per run so a failure is reproducible.
+      #
+      # NEVER copy this into anything that stores real data.
+      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
+      # Laravel 13 defaults the session store to `database`, and the fixture
+      # ships migrations for jobs, cache and widgets but deliberately not for
+      # sessions - so the default 500s on the first request that touches one.
+      # `file` is the smaller fix than carrying a framework migration, and it
+      # earns its keep: it writes to storage/framework/sessions on the shared
+      # named volume, which proves the laravel user can write into the mount.
+      SESSION_DRIVER: file
     volumes:
       - app:/var/www/html
 
@@ -100,6 +139,12 @@ services:
       # survived; with FPM's default the route reports MISSING and everything
       # else stays green.
       LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
+      # Same throwaway key the cli service carries, and it must stay identical:
+      # a request served by fpm and a command run through cli are asserted to
+      # agree about the application, which they cannot do across two keys.
+      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
+      # Must match cli for the same reason APP_KEY must.
+      SESSION_DRIVER: file
     volumes:
       - app:/var/www/html
 
@@ -138,6 +183,8 @@ services:
     working_dir: /var/www/html
     environment:
       LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
+      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
+      SESSION_DRIVER: file
     volumes:
       - app:/var/www/html
 
@@ -147,5 +194,7 @@ services:
     working_dir: /var/www/html
     environment:
       LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
+      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
+      SESSION_DRIVER: file
     volumes:
       - app:/var/www/html
