@@ -86,6 +86,60 @@ run_bodies() {
   done
 }
 
+# --- the smoke workflow (LOCI-028) -------------------------------------------
+
+@test "workflows: the smoke matrix is read from config/images.yml, not hardcoded" {
+  # A literal version list keeps passing after config/images.yml deprecates a
+  # version or adds one - the exact drift config/images.yml exists to prevent.
+  # Asserted both ways: no version literal in the workflow's live content, and
+  # the yq read actually present.
+  #
+  # Comments are stripped first - whole-line AND trailing. The prose is allowed
+  # to name 8.3 and 8.5 to explain why a leg must fail independently, and every
+  # pinned action carries a `# vX.Y.Z` marker; what must not exist is a version
+  # this workflow ACTS on without asking config/images.yml.
+  local live
+  live="$(sed -E -e '/^[[:space:]]*#/d' -e 's/[[:space:]]+#.*$//' \
+    .github/workflows/smoke.yml)"
+  run grep -nE '[0-9]+\.[0-9]+' <<<"$live"
+  [ "$status" -ne 0 ]
+
+  run yq -r '[.jobs.matrix.steps[] | select((.run // "") | test("config/images.yml"))] | length' \
+    .github/workflows/smoke.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "workflows: the smoke workflow cancels superseded runs" {
+  # Each leg builds three images and brings up a stack; overlapping runs of a
+  # superseded push are the most expensive idle work in the repository.
+  run yq -r '.concurrency."cancel-in-progress"' .github/workflows/smoke.yml
+  [ "$output" = "true" ]
+}
+
+@test "workflows: every smoke leg fails independently" {
+  # fail-fast would cancel 8.5 the moment 8.3 broke, hiding whether the change
+  # is version-specific - which is the first question a red smoke run raises.
+  run yq -r '.jobs.smoke.strategy."fail-fast"' .github/workflows/smoke.yml
+  [ "$output" = "false" ]
+}
+
+@test "workflows: the smoke job asserts the harness leaked nothing, even when red" {
+  # run.sh tears down in an EXIT trap; this is the check that the trap fired.
+  # `if: always()` is load-bearing - gated on success it would only ever run on
+  # the path where a leak is least likely.
+  run yq -r '[.jobs.smoke.steps[]
+    | select((.run // "") | test("docker volume ls"))
+    | .if // "absent"] | length' .github/workflows/smoke.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+
+  run yq -r '.jobs.smoke.steps[]
+    | select((.run // "") | test("docker volume ls"))
+    | .if // "absent"' .github/workflows/smoke.yml
+  [[ "$output" == *"always()"* ]]
+}
+
 # --- bats-runner pinning (M5 submodule -> pinned tarball migration) ----------
 # These lock in the migration away from the vendored bats-core submodule. The
 # submodule was removed because it pulled ~200 files of third-party code into

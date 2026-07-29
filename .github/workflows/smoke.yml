@@ -1,0 +1,119 @@
+name: smoke
+
+# The end-to-end check (LOCI-028). Everything else in CI asserts that an image
+# was built correctly; this asserts that the images WORK TOGETHER - builder
+# installs the dependencies, fpm serves the request through nginx, cli reads the
+# same environment - against the fixture Laravel app, on every supported PHP
+# version.
+#
+# There is deliberately no `push:` trigger. The stack takes minutes per version
+# and its whole purpose is to gate a change before it merges; main is already
+# covered by the same run on the PR that produced it.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# Same shape as pr.yml, and for a stronger reason: each leg builds three images
+# and brings up a two-service stack, so an overlapping run of a superseded push
+# is the most expensive idle work in this repository.
+concurrency:
+  group: smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The matrix is READ, never written. A hardcoded version list here would keep
+  # passing after config/images.yml deprecated a version or added one, which is
+  # exactly the drift config/images.yml exists to prevent (D8). Deprecated
+  # versions are excluded on the same rule bin/matrix.sh and bin/build-chain.sh
+  # apply, so all three agree by construction.
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.gen.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve the supported PHP versions
+        id: gen
+        run: |
+          set -euo pipefail
+          versions="$(yq -o=json -I=0 \
+            '[.php | to_entries | .[] | select(.value.status != "deprecated") | .key]' \
+            config/images.yml)"
+
+          # An empty list would make the smoke job vanish and the check go green
+          # on a config that builds nothing. Fail instead.
+          if [[ "$versions" == "[]" ]]; then
+            echo "::error::config/images.yml lists no supported PHP version"
+            exit 1
+          fi
+
+          echo "smoke matrix: $versions"
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    needs: matrix
+    runs-on: ubuntu-latest
+    # 8.3 failing must not hide whether 8.5 works; a version-specific break is
+    # precisely what this suite is for.
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(needs.matrix.outputs.versions) }}
+    # Generous but finite. A hung `compose up --wait` would otherwise burn the
+    # job's full six-hour default before anyone learned the pool never went
+    # healthy.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+        # NO docker/setup-buildx-action (🧭 5). bin/build-chain.sh builds every
+        # ancestor into the LOCAL daemon and each child's FROM resolves that
+        # local tag; the docker-container driver that action installs has its own
+        # store and cannot see the daemon's images, so the cli/fpm/builder builds
+        # would fail on a "not found" that reads like a registry outage. The
+        # runner's default builder IS the daemon's BuildKit. Same reasoning as
+        # build.yml's driver selection, reached from the other direction.
+      - name: Run the smoke suite
+        env:
+          PHP: ${{ matrix.php }}
+        run: |
+          set -euo pipefail
+          tests/smoke/run.sh --php "$PHP"
+
+        # run.sh tears the stack down in an EXIT trap, verified against the
+        # failure and Ctrl-C paths. This runs even when the suite failed and
+        # asserts that the trap actually fired: a leak on a throwaway runner
+        # costs nothing, but the same leak on a developer's machine is how a
+        # harness gets disabled, and CI is where the regression shows up first.
+      - name: Assert the harness left nothing behind
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          leaked=0
+
+          # Three separate calls, not one loop: `docker ps` formats a container
+          # as {{.Names}} while volume/network use {{.Name}}, so a shared
+          # template would silently print nothing for two of the three and the
+          # assertion would pass by never seeing anything.
+          containers="$(docker ps -a --filter name=laraoci-smoke --format '{{.Names}}')"
+          volumes="$(docker volume ls --filter name=laraoci-smoke --format '{{.Name}}')"
+          networks="$(docker network ls --filter name=laraoci-smoke --format '{{.Name}}')"
+
+          if [[ -n "$containers" ]]; then
+            echo "::error::smoke run leaked containers: ${containers//$'\n'/ }"
+            leaked=1
+          fi
+          if [[ -n "$volumes" ]]; then
+            echo "::error::smoke run leaked volumes: ${volumes//$'\n'/ }"
+            leaked=1
+          fi
+          if [[ -n "$networks" ]]; then
+            echo "::error::smoke run leaked networks: ${networks//$'\n'/ }"
+            leaked=1
+          fi
+
+          exit "$leaked"
