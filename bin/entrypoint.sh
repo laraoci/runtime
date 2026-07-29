@@ -17,6 +17,24 @@ die() {
   exit 1
 }
 
+# A newline in a value appends arbitrary directives to whatever file the value
+# lands in - PHP_MEMORY_LIMIT='256M<newline>auto_prepend_file = /evil.php' is a
+# config-injection primitive for anyone who can set only that one variable. This
+# is shared rather than inlined because it applies to EVERY value this script
+# writes into a php.ini, not only to the ones that arrive through a template:
+# PHP_OPCACHE_PRELOAD is written by a bare printf below and was missed for
+# exactly as long as the check lived inside render().
+#
+# grep CANNOT be used here: it splits its input on newlines, so a newline is a
+# separator it never sees as content and '[[:cntrl:]]' matches nothing. Counting
+# bytes that survive `tr -d '[:print:]'` does work. Verified under dash, which is
+# /bin/sh in the image.
+reject_unprintable() {
+  if [ "$(printf '%s' "$2" | LC_ALL=C tr -d '[:print:]' | wc -c)" -ne 0 ]; then
+    die "$1 contains a non-printable character; refusing to write it into $3"
+  fi
+}
+
 # Render one template. envsubst is NEVER called bare: bare envsubst substitutes
 # every $VAR in its input, which would blank FPM's built-in $pool and any value
 # containing a literal '$'. The allowlist is derived from the ${VAR} references
@@ -41,17 +59,7 @@ render() {
     if [ -z "$value" ]; then
       die "$name is empty but $(basename "$template") requires a value"
     fi
-    # A newline in a value appends arbitrary directives to the rendered ini -
-    # PHP_MEMORY_LIMIT='256M<newline>auto_prepend_file = /evil.php' is a
-    # config-injection primitive for anyone who can set only that one variable.
-    #
-    # grep CANNOT be used here: it splits its input on newlines, so a newline is
-    # a separator it never sees as content and '[[:cntrl:]]' matches nothing.
-    # Counting bytes that survive `tr -d '[:print:]'` does work. Verified under
-    # dash, which is /bin/sh in the image.
-    if [ "$(printf '%s' "$value" | LC_ALL=C tr -d '[:print:]' | wc -c)" -ne 0 ]; then
-      die "$name contains a non-printable character; refusing to render it into $(basename "$template")"
-    fi
+    reject_unprintable "$name" "$value" "$(basename "$template")"
   done
 
   if ! tmp="$(mktemp 2>/dev/null)"; then
@@ -120,10 +128,14 @@ preload_ini="$CONF_D/zz-laraoci-preload.ini"
 
 if [ -n "${PHP_OPCACHE_PRELOAD:-}" ] &&
   { [ "$launched" = "php-fpm" ] || [ "${LARAOCI_PRELOAD_FORCE:-0}" = "1" ]; }; then
-  if printf 'opcache.preload = %s\n' "$PHP_OPCACHE_PRELOAD" >"$preload_ini" 2>/dev/null; then
-    log "preload enabled: $PHP_OPCACHE_PRELOAD"
-  else
-    log "warning: cannot write $preload_ini; preload not enabled"
+  if [ -n "${PHP_OPCACHE_PRELOAD:-}" ] &&
+    { [ "$launched" = "php-fpm" ] || [ "${LARAOCI_PRELOAD_FORCE:-0}" = "1" ]; }; then
+    reject_unprintable PHP_OPCACHE_PRELOAD "$PHP_OPCACHE_PRELOAD" "$(basename "$preload_ini")"
+    if printf 'opcache.preload = %s\n' "$PHP_OPCACHE_PRELOAD" >"$preload_ini" 2>/dev/null; then
+      log "preload enabled: $PHP_OPCACHE_PRELOAD"
+    else
+      log "warning: cannot write $preload_ini; preload not enabled"
+    fi
   fi
 else
   if [ -n "${PHP_OPCACHE_PRELOAD:-}" ]; then

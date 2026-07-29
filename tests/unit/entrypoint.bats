@@ -249,3 +249,27 @@ TPL
   [[ "$output" == *"PHP_FPM_PM is unset"* ]]
 }
 
+@test "entrypoint: a newline in PHP_OPCACHE_PRELOAD is fatal (L3, same rule as the ini)" {
+  # render() refuses a non-printable character because one newline turns a single
+  # variable into "append any directive you like". The preload directive is
+  # written by a bare printf that skipped that check, so PHP_OPCACHE_PRELOAD was
+  # the one variable the guard did not cover - and zz-laraoci-preload.ini sorts
+  # AFTER zz-laraoci.ini, so an injected directive wins over the baseline.
+  export LARAOCI_DEFAULT_BINARY=php-fpm
+  PHP_OPCACHE_PRELOAD="$(printf '/app/preload.php\nauto_prepend_file = /tmp/pwn.php')"
+  export PHP_OPCACHE_PRELOAD
+  run bin/entrypoint.sh php-fpm
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PHP_OPCACHE_PRELOAD contains a non-printable character"* ]]
+}
+
+@test "entrypoint: a rejected preload writes no directive at all" {
+  # Not just "the process died" - the file must not carry the injected line, or a
+  # restart without the variable would still boot with it.
+  export LARAOCI_DEFAULT_BINARY=php-fpm
+  PHP_OPCACHE_PRELOAD="$(printf '/app/preload.php\nauto_prepend_file = /tmp/pwn.php')"
+  export PHP_OPCACHE_PRELOAD
+  run bin/entrypoint.sh php-fpm
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci-preload.ini"
+  [[ "$output" != *"auto_prepend_file"* ]]
+}
