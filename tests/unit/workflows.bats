@@ -158,7 +158,7 @@ run_bodies() {
   [[ "$output" =~ ^[0-9a-f]{64}$ ]]
 }
 
-@test "workflows: bats.env carries a version and a matching tag URL" {
+@test "workflows: tools.env carries a bats version and a matching tag URL" {
   # shellcheck disable=SC1091
   . tools.env
   [ -n "$BATS_VERSION" ]

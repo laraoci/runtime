@@ -164,7 +164,7 @@ directly rather than going through `make`. It saves typing; it is never the
 source of truth.
 
     make                # list every target
-    make tools          # fetch the pinned tools (shfmt, yq, hadolint, actionlint, bats)
+    make tools          # fetch the pinned tools (see tools.env for the current set)
 
     make test           # unit suite, under the pinned bats
     make lint           # shellcheck every tracked shell script

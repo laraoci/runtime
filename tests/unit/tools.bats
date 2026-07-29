@@ -3,7 +3,7 @@
 # that let one file replace scattered pins without a tools Docker image:
 #   - every tool pinned by a real 64-hex SHA (not just a version)
 #   - every URL names the version it claims (hash guards the right artefact)
-#   - the bats pin here agrees with tests/bats.env (no split source of truth)
+#   - no second pin file exists for any tool (one source of truth)
 #   - CI and Makefile fetch through the verified path, never bare curl
 
 setup() {
@@ -59,17 +59,17 @@ setup() {
   done
 }
 
-@test "tools: the bats pin agrees with tests/bats.env" {
-  # bats is pinned in two files (tools.env for `make tools`, bats.env for
-  # fetch-bats.sh). They must not drift - that would reintroduce the split
-  # source this consolidation removes.
-  local env_ver env_sha
-  # shellcheck source=/dev/null
-  env_ver="$(. tests/bats.env; printf '%s' "$BATS_VERSION")"
-  # shellcheck source=/dev/null
-  env_sha="$(. tests/bats.env; printf '%s' "$BATS_SHA256")"
-  [ "$env_ver" = "$BATS_VERSION" ] || { echo "bats version differs: tools.env=$BATS_VERSION bats.env=$env_ver" >&2; false; }
-  [ "$env_sha" = "$BATS_SHA256" ] || { echo "bats sha differs between tools.env and bats.env" >&2; false; }
+@test "tools: there is no second pin file for bats" {
+  # This replaces a test that compared tools.env's BATS_VERSION against
+  # tests/bats.env. That file was deleted when the two fetchers merged, so the
+  # `. tests/bats.env` in a subshell failed silently and the inherited
+  # BATS_VERSION was compared to itself - an assertion that could not fail,
+  # guarding an invariant that no longer existed.
+  #
+  # What IS worth guarding is that the split source does not come back.
+  [ ! -e tests/bats.env ]
+  [ -n "$BATS_VERSION" ]
+  [ -n "$BATS_SHA256" ]
 }
 
 @test "tools: no workflow fetches a tool with bare curl (L5)" {
