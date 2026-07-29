@@ -88,10 +88,17 @@ export LARAOCI_REGISTRY="$registry"
 export LARAOCI_PHP="$php"
 export LARAOCI_DEBIAN="$debian"
 export LARAOCI_SMOKE_PORT="$port"
-# The value LOCI-030 looks for. Carries the project name so a stale container
-# from another leg answering on this port would produce a mismatch rather than a
-# false pass.
-export LARAOCI_SMOKE_VALUE="laraoci-smoke-${php}-ok"
+# The value LOCI-030 looks for, GENERATED PER RUN. The prefix carries the php
+# version so a container from another leg answering on this port produces a
+# mismatch rather than a false pass; the nonce covers the case the prefix cannot
+# - a stale container from a PREVIOUS run of the SAME version, which would
+# otherwise carry a byte-identical value and satisfy the assertion while proving
+# nothing about the stack that was just built.
+#
+# tests/smoke/env-passthrough.bats asserts this shape, so the two change
+# together.
+nonce="$(od -An -tx1 -N6 /dev/urandom | tr -d ' \n')"
+export LARAOCI_SMOKE_VALUE="laraoci-smoke-${php}-${nonce}"
 
 compose() {
   docker compose --project-name "$project" --file "$SCRIPT_DIR/compose.yml" "$@"

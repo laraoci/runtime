@@ -8,17 +8,14 @@
 #
 # Driven by tests/smoke/run.sh, which owns the stack and the teardown. Running
 # this file directly fails in setup_file with a message saying so.
+#
+# Deliberately does NOT call ensure_app_installed: installing the application is
+# the thing this suite asserts, so it runs the commands itself.
+
+load helpers
 
 setup_file() {
-  # The stack is already up. These come from run.sh; there is no fallback,
-  # because a default here would silently point the suite at some other project
-  # on the machine and assert against it.
-  for var in LARAOCI_SMOKE_PROJECT LARAOCI_SMOKE_COMPOSE_FILE LARAOCI_SMOKE_URL; do
-    if [ -z "${!var:-}" ]; then
-      echo "$var is unset - run this through tests/smoke/run.sh, not directly" >&2
-      return 1
-    fi
-  done
+  require_smoke_env || return 1
 
   # THE STEPS RUN ONCE, HERE, IN ORDER, AND THEIR RESULTS ARE CAPTURED. Two
   # reasons. `composer install` takes the better part of a minute, so a case
@@ -64,46 +61,6 @@ setup_file() {
     'SCRIPT_NAME=/fpm-ping SCRIPT_FILENAME=/fpm-ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000'
 }
 
-compose() {
-  docker compose \
-    --project-name "$LARAOCI_SMOKE_PROJECT" \
-    --file "$LARAOCI_SMOKE_COMPOSE_FILE" "$@"
-}
-
-# Run a step, keeping its combined output and exit status for the cases. The
-# `|| status=$?` is what stops a non-zero step from killing setup_file.
-capture() {
-  local name="$1"
-  shift
-  local status=0
-  "$@" >"$BATS_FILE_TMPDIR/$name.out" 2>&1 || status=$?
-  printf '%s\n' "$status" >"$BATS_FILE_TMPDIR/$name.status"
-}
-
-http_get() {
-  local name="$1" path="$2"
-  curl -sS --max-time 30 \
-    -o "$BATS_FILE_TMPDIR/$name.body" \
-    -w '%{http_code}' \
-    "$LARAOCI_SMOKE_URL$path" >"$BATS_FILE_TMPDIR/$name.code" 2>&1 || true
-}
-
-step_status() { cat "$BATS_FILE_TMPDIR/$1.status"; }
-step_output() { cat "$BATS_FILE_TMPDIR/$1.out"; }
-
-# Print a step's output on failure. Without this a red case says only
-# "expected 0, got 1" and the reader has to reproduce the whole stack by hand.
-assert_step_ok() {
-  local name="$1"
-  local status
-  status="$(step_status "$name")"
-  if [ "$status" -ne 0 ]; then
-    echo "step '$name' exited $status:" >&2
-    step_output "$name" >&2
-  fi
-  [ "$status" -eq 0 ]
-}
-
 @test "builder: composer install resolves the lock file" {
   assert_step_ok composer_install
 }
@@ -135,23 +92,16 @@ assert_step_ok() {
 
 @test "fpm behind nginx serves / with 200" {
   local code
-  code="$(cat "$BATS_FILE_TMPDIR/root.code")"
+  code="$(http_code root)"
   if [ "$code" != "200" ]; then
     echo "GET / returned $code" >&2
-    # Laravel's error page is ~15 KB of inline CSS wrapped around the word
-    # "Server Error", so dumping the body tells the reader nothing. The
-    # exception is in the application log; print that instead. Runs only on the
-    # failure path, so the extra container costs nothing when the suite is green.
-    echo "last application errors:" >&2
-    compose run --rm cli sh -c \
-      "grep -o 'ERROR: [^{]*' storage/logs/laravel.log | tail -5" >&2 2>/dev/null ||
-      echo "  (no ERROR lines in storage/logs/laravel.log)" >&2
+    dump_app_errors
   fi
   [ "$code" = "200" ]
 }
 
 @test "fpm behind nginx serves the application's own marker" {
-  [[ "$(cat "$BATS_FILE_TMPDIR/root.body")" == *"laraoci-fixture-ok"* ]]
+  [[ "$(http_body root)" == *"laraoci-fixture-ok"* ]]
 }
 
 @test "the served page names the asset the build produced" {
@@ -172,7 +122,7 @@ assert_step_ok() {
   # Asserted rather than assumed - the two containers mount the same volume at
   # the same path precisely so this holds, and nothing else checks it.
   [ -f "$BATS_FILE_TMPDIR/asset.code" ]
-  [ "$(cat "$BATS_FILE_TMPDIR/asset.code")" = "200" ]
+  [ "$(http_code asset)" = "200" ]
 }
 
 @test "fpm answers its own ping without touching PHP" {
