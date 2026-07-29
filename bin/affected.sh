@@ -34,9 +34,26 @@ done
 # Changed paths: from git (rename detection OFF so a rename splits into
 # delete-old + add-new, both mapping to the same image; deletions included),
 # or from stdin.
+#
+# THE ASSIGNMENT IS THE POINT, not the mapfile. `mapfile -t x < <(git diff …)`
+# does not observe git's exit status and errexit does not reach into a process
+# substitution, so an unresolvable base ref produced an empty list and a clean
+# exit 0 - which pr.yml reads as "nothing is affected", skips every build leg,
+# and still passes pr-required. A plain command substitution DOES trip errexit,
+# and the explicit `if` reports which ref failed.
 changed=()
 if [[ -n "$base" ]]; then
-  mapfile -t changed < <(git diff --no-renames --name-only "$base")
+  if ! changed_out="$(git diff --no-renames --name-only "$base")"; then
+    echo "error: 'git diff $base' failed - cannot determine affected images" >&2
+    echo "       is the base ref fetched? CI needs fetch-depth: 0" >&2
+    exit 1
+  fi
+  # A truly empty diff is a legitimate answer (a docs-only PR), and must stay
+  # distinct from the failure above. `mapfile <<<""` would yield one empty
+  # element rather than none, so the guard is not cosmetic.
+  if [[ -n "$changed_out" ]]; then
+    mapfile -t changed <<<"$changed_out"
+  fi
 else
   mapfile -t changed
 fi

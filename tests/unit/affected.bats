@@ -96,3 +96,27 @@ affected() { printf '%s\n' "$@" | bin/affected.sh; }
   run bash -c "printf '%s\n' docs/x.md | bin/affected.sh --json"
   [ "$output" = "[]" ]
 }
+
+@test "affected: an unresolvable --base fails loudly, never as 'nothing to build'" {
+  # mapfile < <(cmd) does not observe cmd's exit status and set -e does not reach
+  # into a process substitution, so a failed git diff used to leave `changed`
+  # empty and exit 0 - which pr.yml reads as "no image is affected", skips the
+  # build job, and passes pr-required. A green gate on a PR that built nothing.
+  run bin/affected.sh --base origin/laraoci-no-such-ref
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cannot determine affected images"* ]]
+}
+
+@test "affected: a genuinely empty diff is still a clean exit 0" {
+  # The failure above must not be reached by making every empty result fatal:
+  # a docs-only PR legitimately affects nothing and must stay green.
+  #
+  # HEAD..HEAD, not HEAD. A bare `git diff HEAD` includes the WORKING TREE, so
+  # this assertion would pass or fail depending on what the developer running it
+  # happens to have uncommitted - green on a clean checkout, red the moment you
+  # edit bin/anything, which is precisely when you are running it. The
+  # commit-to-commit form is empty by construction on any tree.
+  run bin/affected.sh --base HEAD..HEAD
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

@@ -31,9 +31,10 @@ jobs:
           set -euo pipefail
           base="origin/${BASE_REF}"
 
-          # A plain assignment from a command substitution DOES trip errexit,
-          # where `mapfile < <(...)` does not - so a failure in affected.sh can
-          # no longer be reported as "nothing to build" (M3).
+          # affected.sh exits non-zero when it cannot resolve the base ref, and
+          # this assignment propagates that under errexit. Both halves matter:
+          # the script used to swallow a failed `git diff` and exit 0, so a
+          # guard here alone reported "nothing to build" on a broken ref.
           affected_out="$(bin/affected.sh --base "$base")"
 
           images=()
