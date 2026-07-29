@@ -158,11 +158,33 @@ covers the ordinary Laravel front-end stack. If you need `node-gyp`, add
 
 ## Local development
 
-    bats_bin="$(bin/fetch-tools.sh --path bats)"   # checksum-pinned, cached
-    "$bats_bin" tests/unit                         # unit tests (needs mikefarah/yq v4 + jq)
-    shellcheck -S warning $(git ls-files '*.sh')
-    shfmt -d -i 2 -ci $(git ls-files '*.sh')
-    bin/matrix.sh | jq '.include | length'         # 36
+The Makefile is convenience only - every recipe is a single delegation to a
+script under `bin/` or to an already-pinned tool, and CI calls those scripts
+directly rather than going through `make`. It saves typing; it is never the
+source of truth.
+
+    make                # list every target
+    make tools          # fetch the pinned tools (shfmt, yq, hadolint, actionlint, bats)
+
+    make test           # unit suite, under the pinned bats
+    make lint           # shellcheck every tracked shell script
+    make fmt            # shell formatting check  (make fmt-fix applies it)
+    make dockerfiles    # hadolint every Dockerfile
+    make actions        # actionlint the workflows
+
+    make matrix         # the full CI build matrix as JSON
+    make sizes          # image sizes against their budgets (advisory)
+    make structure IMAGE=runtime          # add PHP=8.5 for a non-default version
+
+`make structure` tests the image tag `bin/build-chain.sh` produces, so build it
+first; without `PHP=` it uses whichever version carries `default: true` in
+`config/images.yml`.
+
+Run `make tools` first: the linting targets call the cached binaries under
+`.cache/tools/bin`, so local runs use the same pinned versions as CI. Everything
+you should have green before pushing:
+
+    make hooks          # prints the sequence, so you can paste it
 
 Images below `runtime` begin `FROM ghcr.io/laraoci/runtime:…`, a reference that
 exists in no registry until M4 publishes one. Build an image together with every

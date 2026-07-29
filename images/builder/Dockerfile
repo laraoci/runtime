@@ -53,8 +53,8 @@ COPY --from=node:LTS-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be1264261
 # Every tool is executed once, as an assertion. A COPY --from that lands a
 # binary the target platform cannot run fails HERE rather than in a consumer's
 # build six weeks later.
-# hadolint ignore=DL3008
 USER root
+# hadolint ignore=DL3008
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends git unzip; \

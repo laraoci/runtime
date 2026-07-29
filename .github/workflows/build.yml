@@ -274,21 +274,19 @@ jobs:
           fi
           echo "stop signal: ${got}"
 
-        # Both of the steps below need the image present in the local daemon, so
-        # they are gated on the build-and-load path. On a push build there is
-        # nothing to inspect locally; M4 re-does size measurement against the
-        # registry once `imagetools inspect` has something to look at.
-        #
-        # CONSEQUENCE, stated so it is not lost: the artifact that gets PUBLISHED
-        # is the one artifact never structure-tested. M4 must run the structure
-        # tests against the pushed digest, not only against the PR build.
-      - name: Install container-structure-test
-        if: ${{ inputs.structure_test && !inputs.push }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          bin/fetch-tools.sh --dest "$HOME/.local/bin" container-structure-test
+      # Both of the steps below need the image present in the local daemon, so
+      # they are gated on the build-and-load path. On a push build there is
+      # nothing to inspect locally; M4 re-does size measurement against the
+      # registry once `imagetools inspect` has something to look at.
+      #
+      # CONSEQUENCE, stated so it is not lost: the artifact that gets PUBLISHED
+      # is the one artifact never structure-tested. M4 must run the structure
+      # tests against the pushed digest, not only against the PR build.
+      # No install step: bin/structure-test.sh resolves the pinned checker through
+      # bin/fetch-tools.sh itself, the same way lint.yml's bats job does. The step
+      # that used to be here passed the hyphenated tool name straight into a shell
+      # variable name and died with `CONTAINER-STRUCTURE-TEST_URL: invalid
+      # variable name`, so it failed every time it ran.
 
       # No-ops with a message for any image that has no tests/structure/<name>.yaml
       # yet, so M2 and M3 gain coverage by adding a file rather than editing CI.

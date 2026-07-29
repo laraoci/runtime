@@ -73,3 +73,43 @@ setup() {
   [ "$status" -eq 2 ]
   [[ "$output" == *"LARAOCI_TEST"* ]]
 }
+
+# --- which tag gets measured -------------------------------------------------
+# This used to default to the literal `local`, which nothing in this repository
+# ever tags, so every run without LARAOCI_TAG measured an image that could not
+# exist. The ref is asserted directly - the seam receives it as $1 - because a
+# wrong tag is invisible in the output table.
+
+@test "size-check: an unset LARAOCI_TAG measures the config's default version" {
+  export LARAOCI_MEASURE_CMD='echo "ref=$1" >&2; echo 1000000'
+  run bin/size-check.sh --image runtime --report
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ref=ghcr.io/laraoci/runtime:8.4-trixie"* ]]
+  [[ "$output" != *":local"* ]]
+}
+
+@test "size-check: --php selects the tag to measure" {
+  export LARAOCI_MEASURE_CMD='echo "ref=$1" >&2; echo 1000000'
+  run bin/size-check.sh --image runtime --php 8.3 --report
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ref=ghcr.io/laraoci/runtime:8.3-trixie"* ]]
+}
+
+@test "size-check: LARAOCI_TAG still wins over derivation" {
+  # CI's path: it sets the tag for the leg it just built, and that must never be
+  # second-guessed from the config.
+  export LARAOCI_TAG=9.9-forced
+  export LARAOCI_MEASURE_CMD='echo "ref=$1" >&2; echo 1000000'
+  run bin/size-check.sh --image runtime --report
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ref=ghcr.io/laraoci/runtime:9.9-forced"* ]]
+}
+
+@test "size-check: an unknown --image errors before any tag is resolved" {
+  # The image filter is validated FIRST. With the order reversed, a typo in
+  # --image reported a tag-derivation failure instead of the real mistake.
+  export LARAOCI_MEASURE_CMD='echo 1'
+  CONFIG=tests/fixtures/dangling.yml run bin/size-check.sh --image nope
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"no size budget"* ]]
+}

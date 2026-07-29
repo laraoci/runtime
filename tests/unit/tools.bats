@@ -14,7 +14,9 @@ setup() {
 @test "tools: env declares the expected tool set" {
   [ -n "$LARAOCI_TOOLS" ]
   # Guards against a tool being dropped from iteration while its vars linger.
-  for t in SHFMT YQ HADOLINT ACTIONLINT BATS; do
+  # CONTAINER_STRUCTURE_TEST was absent from this list, which is why nothing
+  # caught that it could not be fetched by name at all.
+  for t in SHFMT YQ HADOLINT ACTIONLINT BATS CONTAINER_STRUCTURE_TEST; do
     case " $LARAOCI_TOOLS " in
       *" $t "*) : ;;
       *) echo "$t missing from LARAOCI_TOOLS" >&2; false ;;
@@ -105,4 +107,48 @@ setup() {
     -e 'fetch-tool\.sh' -e 'fetch-bats\.sh' \
     .github Makefile bin
   [ "$status" -eq 1 ]
+}
+
+# --- tool names vs shell variable names --------------------------------------
+# A tool is named as its EXECUTABLE (`container-structure-test`), but its pins
+# are shell variables, which cannot contain a hyphen. The two spellings drifted
+# apart and nothing noticed: the fetcher wrote `container_structure_test` into
+# the cache, bin/structure-test.sh looked for the hyphenated name on PATH and
+# found an unrelated system copy, and CI's fetch of the hyphenated name exited 1
+# on `CONTAINER-STRUCTURE-TEST_URL: invalid variable name`.
+
+@test "tools: a hyphenated tool name resolves to its pinned path" {
+  run bin/fetch-tools.sh --path container-structure-test
+  [ "$status" -eq 0 ]
+  # The path is the last line; fetch progress goes to stderr.
+  [[ "${lines[-1]}" == *"/.cache/tools/bin/container-structure-test" ]]
+}
+
+@test "tools: the underscored spelling resolves to the same executable" {
+  # Both spellings must name one file - two spellings resolving to two paths is
+  # exactly the split that produced an unpinned local checker.
+  run bin/fetch-tools.sh --path container_structure_test
+  [ "$status" -eq 0 ]
+  [[ "${lines[-1]}" == *"/.cache/tools/bin/container-structure-test" ]]
+}
+
+@test "tools: a tool whose executable name differs declares it explicitly" {
+  # The _BIN field, rather than a hyphen/underscore convention applied silently
+  # to every tool.
+  [ "$CONTAINER_STRUCTURE_TEST_BIN" = "container-structure-test" ]
+}
+
+@test "tools: no cached tool is written under an underscored alias" {
+  # The stale `container_structure_test` name must not come back: a second file
+  # is a second version, and whichever one a caller finds first wins.
+  run bash -c "ls .cache/tools/bin 2>/dev/null | grep '_' || true"
+  [ -z "$output" ]
+}
+
+@test "tools: structure-test.sh resolves the checker through the verified fetcher" {
+  # Not through PATH. This is the assertion that keeps local and CI on the same
+  # checker version - they were on 1.19.3 and 1.22.1 respectively.
+  run grep -c 'fetch-tools.sh" --path container-structure-test' bin/structure-test.sh
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
 }

@@ -73,7 +73,13 @@ while [[ $# -gt 0 ]]; do
       exit 2
       ;;
     *)
-      selected+=("$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')")
+      # A tool is NAMED as its executable (`container-structure-test`) but its
+      # pins are shell variables, which cannot contain a hyphen. Normalising
+      # here means both spellings work as input; without it the hyphenated -
+      # and correct - name produced `CONTAINER-STRUCTURE-TEST_URL: invalid
+      # variable name` and a hard exit.
+      arg="${1^^}"
+      selected+=("${arg//-/_}")
       shift
       ;;
   esac
@@ -115,6 +121,24 @@ download_verified() {
   fi
 }
 
+# The executable's real name on disk. Defaults to the lowercased manifest name,
+# which is right for every tool whose binary has no hyphen. A tool whose real
+# name does differ declares ${NAME}_BIN in tools.env rather than having one
+# derived by convention - `container_structure_test` was landing in the cache
+# under a name nothing on earth would look for.
+tool_bin_name() {
+  # Two `local`s, not one: `local a="$1" b="${a}_BIN"` expands ${a} BEFORE the
+  # first assignment takes effect, so b would be built from whatever `a` held
+  # globally. It happened to work here because `t` is also a loop variable at
+  # top level, which is precisely the kind of accident shellcheck's SC2318 is
+  # for.
+  local t="$1"
+  local bin_v="${t}_BIN"
+  local lc
+  lc="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
+  echo "${!bin_v:-$lc}"
+}
+
 # Resolve the on-disk runner path for a tool without fetching.
 runner_path() {
   # $1 = UPPER name; echoes the path its executable will/does live at.
@@ -122,7 +146,7 @@ runner_path() {
   kind_v="${t}_KIND"
   local kind="${!kind_v}"
   local lc
-  lc="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
+  lc="$(tool_bin_name "$t")"
   case "$kind" in
     binary) echo "$BIN_DIR/$lc" ;;
     tar:*)
@@ -142,7 +166,7 @@ fetch_one() {
   local url_v="${t}_URL" sha_v="${t}_SHA256" kind_v="${t}_KIND" ver_v="${t}_VERSION"
   local url="${!url_v:-}" sha="${!sha_v:-}" kind="${!kind_v:-}" ver="${!ver_v:-}"
   local lc
-  lc="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
+  lc="$(tool_bin_name "$t")"
 
   if ! tool_declared "$t"; then
     echo "error: '$lc' is not a tool declared in tools.env" >&2
@@ -190,8 +214,7 @@ if [[ "$list_only" == 1 ]]; then
   for t in "${tools_to_do[@]}"; do
     v="${t}_VERSION"
     k="${t}_KIND"
-    printf '%-11s %s  (%s)\n' \
-      "$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')" "${!v}" "${!k}"
+    printf '%-24s %s  (%s)\n' "$(tool_bin_name "$t")" "${!v}" "${!k}"
   done
   exit 0
 fi
@@ -213,7 +236,7 @@ if [[ -n "$dest_override" ]]; then
   fetch_one "$t"
   mkdir -p "$dest_override"
   src="$(runner_path "$t")"
-  lc="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
+  lc="$(tool_bin_name "$t")"
   install -m 0755 "$src" "$dest_override/$lc"
   echo "fetch-tools: installed $lc -> $dest_override/$lc" >&2
   exit 0

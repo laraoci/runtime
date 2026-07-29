@@ -39,7 +39,7 @@ recipe_lines() {
   # they only printf.
   local allowed='^(bin/|shellcheck |\$\(BATS\)|\$\{BATS\}|\$\(TOOLS_BIN\)/)'
   local target line
-  for target in test lint fmt fmt-fix matrix affected sizes structure; do
+  for target in test lint fmt fmt-fix matrix affected sizes structure dockerfiles actions; do
     while IFS= read -r line; do
       [ -z "$line" ] && continue
       if ! printf '%s' "$line" | grep -qE "$allowed"; then
@@ -54,7 +54,7 @@ recipe_lines() {
   # && / ; / | inside a recipe means logic is accreting. The one intentional
   # exception is help/hooks, which are pure printf and not checked here.
   local target line
-  for target in test lint fmt fmt-fix matrix affected sizes structure; do
+  for target in test lint fmt fmt-fix matrix affected sizes structure dockerfiles actions; do
     while IFS= read -r line; do
       case "$line" in
         *' && '* | *';'* | *' | '*)

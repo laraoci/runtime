@@ -27,7 +27,15 @@ TOOLS_BIN = .cache/tools/bin
 BASE ?= origin/main
 IMAGE ?=
 
-.PHONY: help tools test lint fmt fmt-fix matrix affected sizes structure actions hooks
+# PHP is optional: bin/structure-test.sh defaults to whichever version carries
+# `default: true` in config/images.yml. Expanding to nothing rather than to an
+# empty --php keeps the version out of this file entirely - a hardcoded default
+# here would be a second source of truth against config/images.yml, which is the
+# drift `make` is explicitly not allowed to introduce.
+PHP ?=
+PHP_ARG = $(if $(PHP),--php $(PHP))
+
+.PHONY: help tools test lint fmt fmt-fix matrix affected sizes structure dockerfiles actions hooks
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) \
@@ -54,14 +62,17 @@ matrix: ## Print the full CI build matrix as JSON
 affected: ## Images affected since BASE (default origin/main)
 	bin/affected.sh --base $(BASE)
 
-sizes: ## Report image sizes against their budgets (advisory)
-	bin/size-check.sh --report
+sizes: ## Report image sizes against their budgets, advisory (make sizes PHP=8.5)
+	bin/size-check.sh --report $(PHP_ARG)
 
-structure: ## Run container-structure-test for IMAGE (e.g. make structure IMAGE=runtime)
-	bin/structure-test.sh --image $(IMAGE)
+structure: ## Structure-test IMAGE, optionally for PHP (make structure IMAGE=runtime PHP=8.5)
+	bin/structure-test.sh --image $(IMAGE) $(PHP_ARG)
+
+dockerfiles: ## Lint every Dockerfile with pinned hadolint
+	$(TOOLS_BIN)/hadolint $$(git ls-files '*Dockerfile' '*.Dockerfile')
 
 actions: ## Lint GitHub Actions workflows with pinned actionlint
 	$(TOOLS_BIN)/actionlint
 
 hooks: ## Print the local pre-commit sequence to run before pushing
-	@printf 'make tools && make fmt && make lint && make actions && make test\n'
+	@printf 'make tools && make fmt && make lint && make dockerfiles && make actions && make test\n'
