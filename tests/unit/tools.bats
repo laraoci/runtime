@@ -24,27 +24,59 @@ setup() {
   done
 }
 
-@test "tools: every tool is pinned by a 64-hex SHA-256" {
-  local t sha_v
+# A tool ships either ONE asset for every architecture (NAME_URL) or one per
+# architecture (NAME_URL_AMD64 / NAME_URL_ARM64). These iterate both so a pin
+# added for one architecture and forgotten for the other cannot pass.
+pin_for() {
+  # $1 = UPPER tool, $2 = URL|SHA256, $3 = AMD64|ARM64
+  local specific="${1}_${2}_${3}" generic="${1}_${2}"
+  printf '%s' "${!specific:-${!generic:-}}"
+}
+
+@test "tools: every tool is pinned by a 64-hex SHA-256 on every architecture" {
+  local t arch sha
   for t in $LARAOCI_TOOLS; do
-    sha_v="${t}_SHA256"
-    if ! [[ "${!sha_v:-}" =~ ^[0-9a-f]{64}$ ]]; then
-      echo "$t has a missing or malformed SHA-256: '${!sha_v:-}'" >&2
-      false
-    fi
+    for arch in AMD64 ARM64; do
+      sha="$(pin_for "$t" SHA256 "$arch")"
+      [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "$t/$arch has no well-formed SHA-256: '$sha'" >&2
+        false
+      }
+    done
   done
 }
 
-@test "tools: every URL contains the version it claims to pin" {
-  # If the URL and version disagree, the SHA guards a different artefact than
-  # the one the file names - the exact substitution the hash is meant to stop.
-  local t url_v ver_v
+@test "tools: every URL contains the version it claims to pin, on every architecture" {
+  local t arch url ver_v ver
   for t in $LARAOCI_TOOLS; do
-    url_v="${t}_URL"; ver_v="${t}_VERSION"
-    case "${!url_v}" in
-      *"${!ver_v}"*) : ;;
-      *) echo "$t: URL does not contain version ${!ver_v}: ${!url_v}" >&2; false ;;
-    esac
+    ver_v="${t}_VERSION"
+    ver="${!ver_v}"
+    for arch in AMD64 ARM64; do
+      url="$(pin_for "$t" URL "$arch")"
+      [[ "$url" == *"$ver"* ]] || {
+        echo "$t/$arch URL does not name version $ver: $url" >&2
+        false
+      }
+    done
+  done
+}
+
+@test "tools: a per-arch tool declares BOTH architectures, never one" {
+  # Half a pin is the failure this catches: an arm64 URL with no arm64 SHA, or
+  # an amd64-only tool that looks complete because the generic fallback happens
+  # to be set. If EITHER arch-specific field exists, all four must.
+  local t u_amd u_arm
+  for t in $LARAOCI_TOOLS; do
+    u_amd="${t}_URL_AMD64"
+    u_arm="${t}_URL_ARM64"
+    if [ -n "${!u_amd:-}" ] || [ -n "${!u_arm:-}" ]; then
+      local s_amd="${t}_SHA256_AMD64" s_arm="${t}_SHA256_ARM64"
+      [ -n "${!u_amd:-}" ] && [ -n "${!u_arm:-}" ] &&
+        [ -n "${!s_amd:-}" ] && [ -n "${!s_arm:-}" ] || {
+        echo "$t declares some but not all of URL/SHA256 x AMD64/ARM64" >&2
+        false
+      }
+    fi
   done
 }
 

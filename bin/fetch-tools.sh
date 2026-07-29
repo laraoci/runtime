@@ -24,6 +24,20 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/tools.env"
 
+# The host architecture, in the spelling tools.env uses. Resolved ONCE: a tool
+# fetched under one arch and looked up under another is the failure mode this
+# prevents, and `uname -m` is not consistent across the two names each
+# architecture answers to.
+case "$(uname -m)" in
+  x86_64 | amd64) ARCH="AMD64" ;;
+  aarch64 | arm64) ARCH="ARM64" ;;
+  *)
+    echo "error: unsupported architecture '$(uname -m)'." >&2
+    echo "       tools.env pins assets for x86_64 and aarch64 only." >&2
+    exit 1
+    ;;
+esac
+
 BIN_DIR="${LARAOCI_TOOLS_DIR:-$REPO_ROOT/.cache/tools/bin}"
 SRC_DIR="${LARAOCI_TOOLS_DIR:-$REPO_ROOT/.cache/tools}/src"
 
@@ -144,6 +158,16 @@ tool_bin_name() {
   echo "${!bin_v:-$lc}"
 }
 
+# The URL or SHA-256 for this tool on THIS architecture. A per-arch pin wins; the
+# unsuffixed pin is the fallback, which is what bats - a source tarball that
+# builds nothing - uses. Returns empty for a tool that declares neither, which
+# fetch_one reports as "not fully declared".
+tool_field() {
+  # $1 = UPPER tool name, $2 = URL | SHA256
+  local specific="${1}_${2}_${ARCH}" generic="${1}_${2}"
+  printf '%s' "${!specific:-${!generic:-}}"
+}
+
 # Resolve the on-disk runner path for a tool without fetching.
 runner_path() {
   # $1 = UPPER name; echoes the path its executable will/does live at.
@@ -168,8 +192,11 @@ runner_path() {
 # Fetch one tool into the cache (BIN_DIR/SRC_DIR). Idempotent.
 fetch_one() {
   local t="$1"
-  local url_v="${t}_URL" sha_v="${t}_SHA256" kind_v="${t}_KIND" ver_v="${t}_VERSION"
-  local url="${!url_v:-}" sha="${!sha_v:-}" kind="${!kind_v:-}" ver="${!ver_v:-}"
+  local kind_v="${t}_KIND" ver_v="${t}_VERSION"
+  local kind="${!kind_v:-}" ver="${!ver_v:-}"
+  local url sha
+  url="$(tool_field "$t" URL)"
+  sha="$(tool_field "$t" SHA256)"
   local lc
   lc="$(tool_bin_name "$t")"
 
@@ -226,7 +253,7 @@ if [[ "$list_only" == 1 ]]; then
     fi
     v="${t}_VERSION"
     k="${t}_KIND"
-    printf '%-24s %s  (%s)\n' "$(tool_bin_name "$t")" "${!v}" "${!k}"
+    printf '%-24s %s  (%s, %s)\n' "$(tool_bin_name "$t")" "${!v}" "${!k}" "$ARCH"
   done
   exit 0
 fi
