@@ -1,0 +1,272 @@
+schemaVersion: '2.0.0'
+
+# What `fpm` adds to, or overrides in, the inherited contract. Everything shared
+# with the rest of the graph - user, workdir, entrypoint, the extension set, the
+# ImageMagick policy, Ghostscript's absence - is asserted by
+# tests/structure/_common.yaml, which bin/structure-test.sh runs alongside this
+# file on the fpm leg.
+#
+# NOTHING HERE ASSERTS A SAPI INSTALL. runtime is fpm-based (D18) and already
+# carries php-fpm; this image adds a command, a pool overlay, a healthcheck and
+# the correct stop signal. The assertions below are shaped accordingly: they
+# check that upstream's configuration SURVIVED, not that LaraOCI supplied it.
+
+metadataTest:
+  cmd: ["php-fpm"]
+  # Inherited from the base, deliberately NOT re-declared in
+  # images/fpm/Dockerfile (§7.3). Asserted here because "inherited" is a claim
+  # about the built image, not about the Dockerfile: an EXPOSE that silently
+  # stopped arriving would leave `docker run -P` publishing nothing.
+  #
+  # The format is the bare port. "9000/tcp" - which is what `docker inspect`
+  # prints - FAILS: verified against php:8.4-fpm-trixie with both forms.
+  exposedPorts: ["9000"]
+  envVars:
+    # 🧭 1. Same value as the parent, restated because this is the image where
+    # `docker run <fpm> -v` starting FPM is the correct behaviour, and where a
+    # descendant's `php` would be a bug rather than a choice.
+    - key: LARAOCI_DEFAULT_BINARY
+      value: php-fpm
+    # The fpm column of §6.4, inherited unchanged from runtime. _common.yaml
+    # deliberately omits these two because cli and builder override them, so
+    # without this block the fpm leg would assert nothing about the values that
+    # actually bound a request.
+    - key: PHP_MEMORY_LIMIT
+      value: 256M
+    - key: PHP_MAX_EXECUTION_TIME
+      value: "30"
+    # The drain ceiling (§7.3). Asserted as metadata as well as in the rendered
+    # pool because this is the one an operator has to reason about next to their
+    # orchestrator's stop grace, and `docker inspect` is where they will look.
+    - key: PHP_FPM_PROCESS_CONTROL_TIMEOUT
+      value: 10s
+
+fileExistenceTests:
+  # D6 covers fpm as much as cli: this image runs application code, not
+  # dependency resolution.
+  - name: Composer is absent (D6)
+    path: /usr/local/bin/composer
+    shouldExist: false
+
+  # LOCI-024. The OWNERSHIP is the assertion, not the existence: php-fpm.d stays
+  # root-owned, so the entrypoint can only rewrite this file at start because it
+  # was pre-created as laravel. Get that wrong and nothing breaks loudly - the
+  # render's `cat > target` fails, render() logs "not writable" and returns 0,
+  # and the container serves requests under the BUILD-time pool while ignoring
+  # every PHP_FPM_* a consumer set. The uid/gid are literals because D8 fixes
+  # them; a build with a different USER_UID is already refused in RUN 1.
+  - name: the rendered pool is writable by the runtime user (LOCI-024, D8)
+    path: /usr/local/etc/php-fpm.d/zz-laraoci.conf
+    shouldExist: true
+    uid: 1000
+    gid: 1000
+    permissions: '-rw-r--r--'
+
+  # LOCI-025. cgi-fcgi speaks FastCGI straight to the pool, so the HEALTHCHECK
+  # exercises the exact socket Nginx will use rather than a side channel - there
+  # is no HTTP server in this image to curl. It is the only reason libfcgi-bin
+  # is installed (41 KB, plus 92 KB for libfcgi0t64, measured with dpkg-query),
+  # and it lands here rather than in runtime because no other image has a socket
+  # to ping.
+  #
+  # The mode matters as much as the path: HEALTHCHECK runs as the image USER,
+  # which is laravel, so a binary installed without its world-execute bit would
+  # leave every fpm container permanently `unhealthy` for a reason that never
+  # appears in the application logs.
+  #
+  # This is HALF the assertion. container-structure-test cannot see a HEALTHCHECK
+  # at all - metadataTest has no field for one, the same gap that pushed the stop
+  # signal into .github/workflows/build.yml - so the instruction's presence and
+  # its transition to `healthy` are verified by hand against a running container
+  # (Task 6 Step 4). What this test protects is the ingredient: an apt change
+  # that drops the package would otherwise surface only as a health status
+  # nobody checks.
+  - name: cgi-fcgi is present for the healthcheck (LOCI-025)
+    path: /usr/bin/cgi-fcgi
+    shouldExist: true
+    permissions: '-rwxr-xr-x'
+
+commandTests:
+  # ------------------------------------------------------------------------
+  # TRAP 2 - THE UPSTREAM AUDIT. The official -fpm image already ships
+  # clear_env, both log redirections, catch_workers_output,
+  # decorate_workers_output, listen and daemonize in php-fpm.d/docker.conf and
+  # zz-docker.conf. LaraOCI's job is not to set these but to avoid clobbering
+  # them (§6.3), so what is asserted is that they are still there and still
+  # upstream's values.
+  #
+  # php-fpm -tt parses the whole php-fpm.d/*.conf concatenation in glob order
+  # and prints the resolved configuration, so this reads the same file set the
+  # running server would - including anything LaraOCI adds later in the glob.
+  #
+  # clear_env is the single most consequential directive in the repository: with
+  # FPM's default of `yes`, a Laravel app sees none of the container's
+  # environment and silently falls back to defaults. It is asserted here AND
+  # behaviourally by the LOCI-030 smoke test - the only deliberate duplication
+  # in the suite (🧭 2), because this catches an upstream change on a base bump
+  # in seconds while the smoke test catches everything between the directive and
+  # env() actually returning the value.
+  # ------------------------------------------------------------------------
+  - name: upstream's pool directives survived untouched (trap 2, §6.3)
+    command: sh
+    args: ["-c", "php-fpm -tt 2>&1 | sed -n 's/.*\\(clear_env\\|daemonize\\|catch_workers_output\\|decorate_workers_output\\) = \\(.*\\)/\\1=\\2/p' | sort -u"]
+    expectedOutput:
+      - 'clear_env=no'
+      - 'daemonize=no'
+      - 'catch_workers_output=yes'
+      - 'decorate_workers_output=no'
+
+  # Separate from the block above because it is the pool-socket half of the same
+  # claim: EXPOSE 9000 in the metadata says the port is published, this says FPM
+  # is actually listening on it. `listen` alone matches - the greedy .* needs a
+  # literal " = " after the name, which listen.backlog and listen.owner do not
+  # have.
+  - name: upstream's listen address survived untouched (trap 2, §7.3)
+    command: sh
+    args: ["-c", "php-fpm -tt 2>&1 | sed -n 's/.*\\(listen\\) = \\(.*\\)/\\1=\\2/p' | sort -u"]
+    expectedOutput:
+      - 'listen=9000'
+
+  # ------------------------------------------------------------------------
+  # THE POOL OVERLAY (LOCI-024, §7.3). Three separate claims, deliberately not
+  # merged: what the resolved configuration SAYS, what our file's SHAPE is, and
+  # what our file does NOT contain. Only the first is visible to `php-fpm -tt`,
+  # and only the last two can catch trap 2.
+  # ------------------------------------------------------------------------
+
+  # Claim one: OUR VALUES WON. Read through -tt rather than off the file,
+  # because the file's contents prove nothing about precedence - www.conf ships
+  # pm.max_children = 5 and user = www-data, and it sorts BEFORE zz-laraoci.conf
+  # in the php-fpm.d/*.conf glob. Seeing 20 and laravel here is the only
+  # evidence that our file is last and that the [www] header put these
+  # directives in the pool rather than somewhere php-fpm ignores.
+  #
+  # The pattern anchors each name on the whitespace that precedes it - -tt
+  # indents every pool directive with a tab. Without that anchor the greedy .*
+  # lets `listen.group = undefined` match the `group` alternative and report
+  # group=undefined, which is a different directive entirely.
+  - name: the LaraOCI pool values win over upstream's defaults (LOCI-024, §7.3)
+    command: sh
+    args: ["-c", "php-fpm -tt 2>&1 | sed -n 's/.*[[:space:]]\\(user\\|group\\|pm\\|pm\\.max_children\\|pm\\.start_servers\\|pm\\.min_spare_servers\\|pm\\.max_spare_servers\\|pm\\.max_requests\\|pm\\.status_path\\|ping\\.path\\|ping\\.response\\) = \\(.*\\)/\\1=\\2/p' | sort -u"]
+    expectedOutput:
+      # D8's identity, overriding www.conf's www-data. Inert while the master
+      # runs unprivileged - php-fpm logs "'user' directive is ignored when FPM
+      # is not running as root" twice, which is upstream's own www.conf talking
+      # and is expected output - but load-bearing under `docker run --user 0`.
+      - 'user=laravel'
+      - 'group=laravel'
+      # §6.4's fpm rows, as rendered from the PHP_FPM_* environment.
+      - 'pm=dynamic'
+      - 'pm\.max_children=20'
+      - 'pm\.start_servers=4'
+      - 'pm\.min_spare_servers=2'
+      - 'pm\.max_spare_servers=6'
+      - 'pm\.max_requests=500'
+      # LOCI-025's target and its operator-facing sibling. Pool-internal paths
+      # handled by FPM itself, so no application route can shadow them.
+      - 'ping\.path=/fpm-ping'
+      - 'ping\.response=pong'
+      - 'pm\.status_path=/fpm-status'
+
+  # Claim two: the pool is TUNABLE. Everything above would pass identically if
+  # the template had been baked into a static file at build time, which is the
+  # one thing §7.3 says it must not be. Setting the variable and re-running the
+  # entrypoint is the only way to tell the two apart - and it exercises the
+  # write path that the ownership test above protects, so a root-owned pool file
+  # fails here too rather than silently pinning every consumer to 20 children.
+  - name: a PHP_FPM_* override reaches the running pool (LOCI-024, §6.4)
+    command: sh
+    args:
+      - -c
+      - |
+        /usr/local/bin/laraoci-entrypoint true >/dev/null 2>&1
+        php-fpm -tt 2>&1 | sed -n 's/.*[[:space:]]\(pm\.max_children\) = \(.*\)/\1=\2/p'
+    envVars:
+      - key: PHP_FPM_MAX_CHILDREN
+        value: "40"
+    expectedOutput: ['^pm\.max_children=40\n$']
+
+  # Claim one and a half: THE DRAIN. process_control_timeout is what makes
+  # STOPSIGNAL SIGQUIT mean anything - measured, with FPM's default of 0 the
+  # master takes the graceful code path and then exits without waiting, so an
+  # in-flight response is truncated exactly as SIGTERM truncates it.
+  #
+  # Read separately from the pool values above because it lives in [global], not
+  # [www]: php-fpm refuses to start with it under a pool, so a wrong section here
+  # is a crash rather than a silent misconfiguration. The suffix is reported
+  # verbatim - php-fpm echoes `10s`, it does not normalise to a bare number - so
+  # the assertion is anchored to the exact string. A prefix match would accept
+  # 10m and 100s as happily as 10s.
+  #
+  # The behaviour this enables cannot be asserted from one container with no
+  # network, so the drain itself belongs to the smoke suite (🧭 2). This is the
+  # static half: the directive reached [global] with the right value.
+  - name: the graceful-shutdown ceiling is set in [global] (§7.3, trap 1)
+    command: sh
+    args: ["-c", "php-fpm -tt 2>&1 | sed -n 's/.*[[:space:]]\\(process_control_timeout\\) = \\(.*\\)/\\1=\\2/p' | sort -u"]
+    expectedOutput: ['^process_control_timeout=10s\n$']
+
+  # Claim three, first half: TWO SECTION HEADERS, in this order, and exactly one
+  # [www]. FPM section headers persist across file boundaries, so a pool file
+  # without its own header inherits whatever section was open when the previous
+  # file ended. zz-docker.conf does end with a [www] line today, but upstream
+  # documents that as backwards compatibility "will be removed in 8.6+" - the
+  # day it goes, an unheadered file drops these directives into [global], where
+  # php-fpm rejects some and ignores the rest.
+  #
+  # The ORDER is the assertion that matters now that there are two. [global]
+  # opens the file for process_control_timeout and [www] must close it, because
+  # every directive after [www] is a pool directive and this file is last in the
+  # glob. Reversed, php-fpm refuses to start; duplicated, [www] opens a second
+  # pool definition. Printing the headers themselves rather than counting them
+  # means a failure names what it found.
+  - name: the pool file opens [global] and closes [www], once each (trap 2, §7.3)
+    command: sh
+    args: ["-c", "grep '^\\[' /usr/local/etc/php-fpm.d/zz-laraoci.conf | tr '\\n' ' '"]
+    expectedOutput: ['^\[global\] \[www\] $']
+
+  # Claim three, second half: ADDITIVE ONLY. Every name below is already set by
+  # upstream's docker.conf or zz-docker.conf, and the audits at the top of this
+  # file assert those values survive. Restating any of them here would make that
+  # audit self-fulfilling - it would then be checking LaraOCI's copy rather than
+  # upstream's original, and a base bump that changed the real default would
+  # pass silently while the running server used our stale duplicate.
+  #
+  # The first grep prints the offending lines when this fails; the second is the
+  # assertion. `|| true` on both because grep exits 1 on no match, which is the
+  # passing case.
+  - name: the pool file restates nothing upstream already sets (trap 2, §6.3)
+    command: sh
+    args:
+      - -c
+      - |
+        grep -nE '^(clear_env|daemonize|listen|access\.log|catch_workers_output|decorate_workers_output)' /usr/local/etc/php-fpm.d/zz-laraoci.conf || true
+        grep -cE '^(clear_env|daemonize|listen|access\.log|catch_workers_output|decorate_workers_output)' /usr/local/etc/php-fpm.d/zz-laraoci.conf || true
+    expectedOutput: ['^0\n$']
+
+  # The per-image default; _common.yaml asserts only that an explicit override
+  # reaches the ini. This is the value a request actually runs under.
+  - name: rendered ini - memory_limit is the fpm default (§6.4)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["php", "-r", "echo ini_get('memory_limit');"]
+    expectedOutput: ['^256M$']
+
+  # READS THE FILE, NOT ini_get(). The PHP CLI SAPI hardcodes
+  # max_execution_time=0 and that override cannot be undone by php.ini - `php -i`
+  # in this image reports "max_execution_time => 0 => 0" even though the
+  # rendered ini says 30, because both columns come from the running SAPI.
+  # There is no CLI-invoked way to observe the value FPM workers will use, and
+  # container-structure-test has only CLI-invoked ways to ask.
+  #
+  # So the assertion is made against what the entrypoint WROTE, which is the
+  # actual claim: §6.4's default reached the rendered ini. Do not "simplify"
+  # this back to ini_get - it would report 0 here and pass on the cli image for
+  # a reason that has nothing to do with the configuration under test.
+  - name: rendered ini - max_execution_time bounds a request (§6.4)
+    command: sh
+    args:
+      - -c
+      - |
+        /usr/local/bin/laraoci-entrypoint true >/dev/null 2>&1
+        grep -E '^max_execution_time' /usr/local/etc/php/conf.d/zz-laraoci.ini
+    expectedOutput: ['^max_execution_time = 30\n$']

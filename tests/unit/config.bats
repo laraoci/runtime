@@ -37,7 +37,37 @@ setup() {
   [ "$output" -eq 0 ]
 }
 
+@test "config: fpm declares the SIGQUIT stop signal, and nothing else declares one (§6.2)" {
+  # php-fpm drains on SIGQUIT and dies on SIGTERM; the CLI images are the other
+  # way round and inherit runtime's SIGTERM. If this key ever spreads to another
+  # image, that image's workers stop trapping their own shutdown.
+  run yq -r '.images.fpm.stopsignal' config/images.yml
+  [ "$output" = "SIGQUIT" ]
+
+  run yq -r '[.images | to_entries | .[] | select(.value.stopsignal) | .key] | join(",")' config/images.yml
+  [ "$output" = "fpm" ]
+}
+
 @test "config: every image carries a description for its OCI label" {
   run bash -c "yq -r '[.images[] | select((.description // \"\") == \"\")] | length' config/images.yml"
   [ "$output" -eq 0 ]
+}
+
+@test "config: no script interpolates a value into a yq expression" {
+  # bin/build-chain.sh, bin/size-check.sh and bin/structure-test.sh all state
+  # this rule in comments; four sites did the opposite, and two of them
+  # (tests/smoke/run.sh) queried with an unvalidated --php argument. strenv()
+  # passes the value through the environment, where it can never be read as
+  # query syntax.
+  #
+  # The pattern is a double quote immediately followed by a $ inside a yq
+  # expression: .php."$php", .size_budgets."$image".
+  local hits
+  hits="$(grep -rn 'yq[^|]*\."\$' --include='*.sh' --include='*.yml' \
+    bin tests/smoke .github/workflows || true)"
+  if [ -n "$hits" ]; then
+    echo "value interpolated into a yq expression - use strenv() instead:" >&2
+    echo "$hits" >&2
+    false
+  fi
 }

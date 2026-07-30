@@ -15,6 +15,7 @@ readonly MB=1000000
 
 report=0
 image_filter=""
+php=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --report)
@@ -26,8 +27,13 @@ while [[ $# -gt 0 ]]; do
       image_filter="$2"
       shift 2
       ;;
+    --php)
+      require_arg "$1" "${2:-}"
+      php="$2"
+      shift 2
+      ;;
     -h | --help)
-      echo "usage: size-check.sh [--report] [--image NAME]" >&2
+      echo "usage: size-check.sh [--report] [--image NAME] [--php VERSION]" >&2
       exit 0
       ;;
     *)
@@ -68,7 +74,6 @@ fmt_mb() {
 }
 
 registry="$(yq -r '.defaults.registry' "$CONFIG")"
-tag="${LARAOCI_TAG:-local}"
 
 mapfile -t budget_images < <(yq -r '.size_budgets | keys | .[]' "$CONFIG")
 
@@ -88,12 +93,64 @@ if [[ -n "$image_filter" ]]; then
   fi
 fi
 
+# CI sets LARAOCI_TAG to `<php>-<debian>` for the leg it just built, and that
+# always wins. With it unset the tag is DERIVED the same way - it used to
+# default to the literal `local`, a tag nothing in this repository ever
+# produces, so every invocation without LARAOCI_TAG measured an image that
+# could not exist and died on `docker save`.
+tag="${LARAOCI_TAG:-}"
+if [[ -z "$tag" ]]; then
+  default_debian="$(yq -r '.defaults.debian // ""' "$CONFIG")"
+
+  if [[ -z "$php" ]]; then
+    php="$(yq -r '.php // {} | to_entries | .[] | select(.value.default == true) | .key' "$CONFIG")"
+    if [[ -z "$php" || "$php" == "null" ]]; then
+      echo "error: no PHP version carries 'default: true' in $CONFIG" >&2
+      echo "       pass --php, or set LARAOCI_TAG to the tag to measure" >&2
+      exit 2
+    fi
+  fi
+
+  # The §3.1 per-version override, applied exactly as bin/build-chain.sh applies
+  # it, so the tag measured here is the tag that was built.
+  debian="$(yq -r ".php.\"$php\".debian // \"\"" "$CONFIG")"
+  [[ -z "$debian" || "$debian" == "null" ]] && debian="$default_debian"
+  if [[ -z "$debian" ]]; then
+    echo "error: no Debian suite for PHP $php in $CONFIG" >&2
+    exit 2
+  fi
+
+  tag="$php-$debian"
+fi
+
 printf '%-12s %10s %10s %10s  %s\n' "IMAGE" "BUDGET_MB" "ACTUAL_MB" "DELTA_MB" "STATUS"
 fail=0
+missing=0
 for image in "${budget_images[@]}"; do
   [[ -n "$image_filter" && "$image" != "$image_filter" ]] && continue
-  budget_mb="$(yq -r ".size_budgets.\"$image\"" "$CONFIG")"
+  budget_mb="$(IMAGE="$image" yq -r '.size_budgets[strenv(IMAGE)]' "$CONFIG")"
   ref="$registry/$image:$tag"
+
+  # An image that is not in the daemon cannot be measured, and `docker save` on
+  # a missing ref aborts the whole run under errexit - so a single unbuilt image
+  # used to take the entire report down. That is not hypothetical: size_budgets
+  # carries `queue` and `scheduler`, which have no Dockerfile until M3, so a
+  # local run over the full set could never complete.
+  #
+  # Reported rather than skipped silently, and it still fails the ENFORCING path
+  # (no --report): a size that was never measured must not read as a pass. The
+  # advisory path (--report, what CI and `make sizes` use) prints the row and
+  # carries on. Never fires under the measure seam, which does not touch docker.
+  if [[ -z "${LARAOCI_MEASURE_CMD:-}" ]] &&
+    command -v docker >/dev/null 2>&1 &&
+    ! docker image inspect "$ref" >/dev/null 2>&1; then
+    printf '%-12s %10s %10s %10s  %s\n' \
+      "$image" "$(fmt_mb $((budget_mb * 100)))" "-" "-" "MISSING"
+    missing=1
+    ((report)) || fail=1
+    continue
+  fi
+
   actual_bytes="$(measure "$ref")"
 
   actual_h=$((actual_bytes * 100 / MB))
@@ -108,6 +165,11 @@ for image in "${budget_images[@]}"; do
   printf '%-12s %10s %10s %10s  %s\n' \
     "$image" "$(fmt_mb "$budget_h")" "$(fmt_mb "$actual_h")" "$(fmt_mb "$delta_h")" "$status"
 done
+
+if ((missing)); then
+  echo "note: MISSING rows are images not in the local daemon at tag '$tag'." >&2
+  echo "      build one with: bin/build-chain.sh --image <name> --php ${php:-<version>}" >&2
+fi
 
 ((report)) && exit 0
 exit "$fail"

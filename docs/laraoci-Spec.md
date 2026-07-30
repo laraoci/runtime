@@ -54,30 +54,36 @@ PHP versions, Debian releases, extension sets, and image types live in `config/i
 
 ## 3. Decision Register
 
-| #       | Decision                                                                                 | Rationale                                                                                                  |
-|---------|------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
-| D1      | FPM inherits from `runtime`, not `queue`                                                 | FPM and CLI are siblings; the original graph was a transcription error                                     |
-| D2      | The shared layer is named `runtime` and is **published**                                 | Users with unusual needs extend rather than fork; `base` read as internal-only                             |
-| D3      | A `builder` image ships in v1, **multi-arch**                                            | `vendor/` must come from somewhere; ARM matters for Apple Silicon local builds (revised - see D3a)         |
-| D4      | `queue` and `scheduler` ship as `FROM cli` + `CMD` only                                  | Near-zero marginal cost, room to diverge later                                                             |
-| D5      | **One Debian release across the entire matrix** - `trixie`                               | Collapses the OS axis to a constant; see §3.1                                                              |
-| D6      | Composer is **absent** from `cli`, `fpm`, `queue`, `scheduler`                           | Attack surface; those images run application code, not dependency resolution                               |
-| D7      | Node/Vite tooling lives only in `builder`                                                | Same reasoning as D6                                                                                       |
-| D8      | Fixed UID/GID `1000:1000`, user `laravel`, across all images                             | Shared `storage/` volumes; mismatched ownership is the #1 support burden                                   |
-| D9      | `tini` as init in every image                                                            | Zombie reaping and signal forwarding, independent of `--init`                                              |
-| D10     | Scheduler uses `schedule:work`, not cron                                                 | Container-native, single foreground process, logs to stdout                                                |
-| D11     | JIT disabled by default                                                                  | Neutral-to-negative for typical FPM/Laravel workloads                                                      |
-| D12     | Extensions installed via `docker-php-extension-installer`                                | Large maintenance saving over hand-rolled builds                                                           |
-| **D13** | `imagick` included in `runtime`, with a **hardened `policy.xml`** and **no Ghostscript** | Broad demand; the delegate/coder denylist removes the entire ImageTragick-class attack surface (§3.2)      |
-| **D14** | An opt-in **preload script** ships at a fixed path, disabled by default                  | Real gains for FPM; too failure-prone to enable blindly                                                    |
-| **D15** | PHP **8.3, 8.4, 8.5** all `supported`                                                    | No `preview` tier at launch                                                                                |
-| **D16** | **FrankenPHP** is the first post-v1 variant, and is permitted a **second root layer**    | It is a SAPI, not a bolted-on web server (§3.3)                                                            |
-| **D17** | CI enforces a **per-image size budget**                                                  | Makes "lightweight" a testable claim rather than an aspiration                                             |
-| **D18** | `runtime` derives from the **`-fpm` upstream variant**, not `-cli`                       | The only way the single-root graph is actually achievable; the fpm variant ships the CLI binary too (§3.4) |
-| **D19** | `install-php-extensions` is pinned by **digest**, not by tag                             | Determinism in the one layer that decides the whole extension surface; Renovate keeps it current (§2.4)    |
-| **D20** | The LaraOCI entrypoint **chains** `docker-php-entrypoint` rather than replacing it       | Preserves upstream's leading-`-` argument fixup for free and reimplements nothing (§6.2)                   |
-| **D21** | `procps` is **not** installed in any image                                               | One process per container makes `ps` near-useless; `kubectl debug` covers incidents (§7.1)                 |
-| **D22** | Preload is gated on the **SAPI** by the entrypoint, written to a separate ini            | CLI opcache is per-process, so preload taxes every `php artisan` call and persists nothing (§7.7)          |
+| #       | Decision                                                                                 | Rationale                                                                                                                                                                                                                                                                                                                                    |
+|---------|------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| D1      | FPM inherits from `runtime`, not `queue`                                                 | FPM and CLI are siblings; the original graph was a transcription error                                                                                                                                                                                                                                                                       |
+| D2      | The shared layer is named `runtime` and is **published**                                 | Users with unusual needs extend rather than fork; `base` read as internal-only                                                                                                                                                                                                                                                               |
+| D3      | A `builder` image ships in v1, **multi-arch**                                            | `vendor/` must come from somewhere; ARM matters for Apple Silicon local builds (revised - see D3a)                                                                                                                                                                                                                                           |
+| D4      | `queue` and `scheduler` ship as `FROM cli` + `CMD` only                                  | Near-zero marginal cost, room to diverge later                                                                                                                                                                                                                                                                                               |
+| D5      | **One Debian release across the entire matrix** - `trixie`                               | Collapses the OS axis to a constant; see §3.1                                                                                                                                                                                                                                                                                                |
+| D6      | Composer is **absent** from `cli`, `fpm`, `queue`, `scheduler`                           | Attack surface; those images run application code, not dependency resolution                                                                                                                                                                                                                                                                 |
+| D7      | Node/Vite tooling lives only in `builder`                                                | Same reasoning as D6                                                                                                                                                                                                                                                                                                                         |
+| D8      | Fixed UID/GID `1000:1000`, user `laravel`, across all images                             | Shared `storage/` volumes; mismatched ownership is the #1 support burden                                                                                                                                                                                                                                                                     |
+| D9      | `tini` as init in every image                                                            | Zombie reaping and signal forwarding, independent of `--init`                                                                                                                                                                                                                                                                                |
+| D10     | Scheduler uses `schedule:work`, not cron                                                 | Container-native, single foreground process, logs to stdout                                                                                                                                                                                                                                                                                  |
+| D11     | JIT disabled by default                                                                  | Neutral-to-negative for typical FPM/Laravel workloads                                                                                                                                                                                                                                                                                        |
+| D12     | Extensions installed via `docker-php-extension-installer`                                | Large maintenance saving over hand-rolled builds                                                                                                                                                                                                                                                                                             |
+| **D13** | `imagick` included in `runtime`, with a **hardened `policy.xml`** and **no Ghostscript** | Broad demand; the delegate/coder denylist removes the entire ImageTragick-class attack surface (§3.2)                                                                                                                                                                                                                                        |
+| **D14** | An opt-in **preload script** ships at a fixed path, disabled by default                  | Real gains for FPM; too failure-prone to enable blindly                                                                                                                                                                                                                                                                                      |
+| **D15** | PHP **8.3, 8.4, 8.5** all `supported`                                                    | No `preview` tier at launch                                                                                                                                                                                                                                                                                                                  |
+| **D16** | **FrankenPHP** is the first post-v1 variant, and is permitted a **second root layer**    | It is a SAPI, not a bolted-on web server (§3.3)                                                                                                                                                                                                                                                                                              |
+| **D17** | CI enforces a **per-image size budget**                                                  | Makes "lightweight" a testable claim rather than an aspiration                                                                                                                                                                                                                                                                               |
+| **D18** | `runtime` derives from the **`-fpm` upstream variant**, not `-cli`                       | The only way the single-root graph is actually achievable; the fpm variant ships the CLI binary too (§3.4)                                                                                                                                                                                                                                   |
+| **D19** | `install-php-extensions` is pinned by **digest**, not by tag                             | Determinism in the one layer that decides the whole extension surface; Renovate keeps it current (§2.4)                                                                                                                                                                                                                                      |
+| **D20** | The LaraOCI entrypoint **chains** `docker-php-entrypoint` rather than replacing it       | Reimplements nothing and survives a base bump. **Narrowed by D23:** the chain stays, the reliance on upstream's leading-`-` fixup does not (§6.2)                                                                                                                                                                                            |
+| **D21** | `procps` is **not** installed in any image                                               | One process per container makes `ps` near-useless; `kubectl debug` covers incidents (§7.1)                                                                                                                                                                                                                                                   |
+| **D22** | Preload is gated on the **SAPI** by the entrypoint, written to a separate ini            | CLI opcache is per-process, so preload taxes every `php artisan` call and persists nothing (§7.7)                                                                                                                                                                                                                                            |
+| **D23** | A per-image `LARAOCI_DEFAULT_BINARY` decides what a **dash-first argument** means        | Upstream's fixup prepends `php-fpm` unconditionally, and every non-FPM image inherits that script from the `-fpm` base (D18). One variable, read once in the entrypoint, fixes both halves - which binary starts, and whether D22's gate reads the process as FPM - without a forked copy of upstream's script (§6.2, §7.2)                  |
+| **D24** | A stated **boundary between structure and smoke tests**, with one deliberate exception   | "Static if it can be, behavioural only when it cannot": structure tests run on every leg in seconds, smoke tests cost minutes. `clear_env = no` is asserted twice on purpose - statically it catches upstream drift on a base bump, behaviourally it catches everything between the directive and `env()` actually returning the value (§10) |
+| **D25** | `builder` returns to `USER laravel` **before** its contract `ENV`s and `CMD`             | Root is held only for the apt/symlink/mkdir block. `COMPOSER_HOME` and `NPM_CONFIG_CACHE` live under `/home/laravel`, created explicitly and owned `1000:1000`, so a mounted BuildKit cache is writable by the user that actually runs (§7.4)                                                                                                |
+| **D26** | `builder` inherits the hardened `policy.xml` and the Ghostscript purge **unchanged**     | An artifact built in a weaker environment than it runs in is the classic production-only surprise; `builder` is also the image most likely to meet untrusted input, since CI runs it against whatever a pull request contains (§3.2, §14)                                                                                                    |
+| **D27** | A child leg **builds its own ancestor chain** into the local daemon                      | Until M4 pushes, `ghcr.io/laraoci/runtime:*` exists in no registry and every matrix leg is a separate runner. `bin/build-chain.sh` builds ancestors in topological order on the `docker` driver, whose builder *is* the daemon; the `docker-container` driver cannot see a loaded image at all. No-ops once `push: true` (§9.1)              |
+| **D28** | `org.opencontainers.image.base.*` on child images is **wrong until M4** - accepted debt  | The label still names `php:<v>-fpm-<suite>` where the real base is `laraoci/runtime`. The PR path builds with `--load`, where no manifest digest exists, so M2 could not emit a truthful `base.digest` even if it corrected `base.name`. Recorded so it reads as known debt rather than as a defect discovered later (§11)                   |
 
 ### 3.4 Why `runtime` uses the `-fpm` upstream variant (D18)
 
@@ -242,11 +248,11 @@ extensions:
 
 size_budgets:          # compressed, MB - enforced by D17
   runtime: 260         # MEASURED in M1 - the 220 shown in the v2 draft was already too low
-  cli: 225
-  fpm: 235
-  builder: 500
-  queue: 225
-  scheduler: 225
+  cli: 260             # MEASURED and frozen in M2
+  fpm: 260             # MEASURED and frozen in M2
+  builder: 330         # MEASURED and frozen in M2 - the 500 placeholder was far too generous
+  queue: 225           # placeholder - known wrong, see below
+  scheduler: 225       # placeholder - known wrong, see below
 
 images:
   runtime:
@@ -270,7 +276,15 @@ images:
 - Exactly one PHP version carries `default: true`. It backs `:latest`.
 - `php.<version>.debian` overrides `defaults.debian` - the transition mechanism of §3.1, unset in normal operation.
 - `images.<name>.parent` defines build order. CI topologically sorts; no hand-maintained ordering.
-- `size_budgets` are frozen against measurement, one milestone at a time. CI fails on exceeding them. `runtime` was measured and frozen in M1 (§3.2, `docs/size-report-m1.md`); `cli`/`fpm`/`builder` are still provisional until M2 and `queue`/`scheduler` until M3. Those five are known to be *below* `runtime`, which they descend from, so they fail the moment those images build - deliberately, as the reminder to measure.
+- `size_budgets` are frozen against measurement, one milestone at a time. CI fails on exceeding them. `runtime` was measured and frozen in M1 (§3.2, `docs/size-report-m1.md`); `cli`, `fpm` and `builder` were measured and frozen in M2 (`docs/size-report-m2.md`); `queue` and `scheduler` are still placeholders until M3, are known to be *below* `cli` which they descend from, and so fail the moment those images build - deliberately, as the reminder to measure.
+
+  One formula produces every frozen number, so they stay comparable across milestones:
+
+      ceil(max(8.3, 8.4, 8.5) × 1.10 / 5) × 5
+
+  The 10% headroom absorbs Debian package drift between the weekly rebuilds (§9.3); rounding to 5 MB keeps the committed number readable. Size grows monotonically with the PHP minor on every image measured so far, so 8.5 sets each budget and a future 8.6 should be expected to raise it.
+
+  **`cli` and `fpm` landing on `runtime`'s own 260 is the correct outcome, not a copy-paste error.** `cli` adds only `ENV` and `CMD` - zero bytes - and `fpm` adds `libfcgi-bin`, `libfcgi0t64` and one rendered pool file, together about 0.5 MB compressed. Both are far inside the rounding step, so all three round identically. The placeholders they replaced (225 and 235) were *below* the parent they descend from, which is impossible by construction - which is exactly why they were placeholders.
 
 Matrix size: 3 PHP × 6 images × 2 arches = **36 build legs** per release. Development builds cut this to affected images on amd64 only.
 
@@ -331,14 +345,22 @@ Everything to stdout/stderr. No log files in the container.
 | `LARAOCI_PRELOAD_IGNORE`            | see §7.7                                                  | all          |
 | `MAGICK_THREAD_LIMIT`               | `1`                                                       | all          |
 | `MAGICK_TMPDIR`                     | `/tmp`                                                    | all          |
+| `LARAOCI_DEFAULT_BINARY`            | `php-fpm` (fpm) / `php` (cli, builder, queue, scheduler)  | all (D23)    |
 | `PHP_FPM_PM`                        | `dynamic`                                                 | fpm          |
 | `PHP_FPM_MAX_CHILDREN`              | `20`                                                      | fpm          |
 | `PHP_FPM_START_SERVERS`             | `4`                                                       | fpm          |
 | `PHP_FPM_MIN_SPARE_SERVERS`         | `2`                                                       | fpm          |
 | `PHP_FPM_MAX_SPARE_SERVERS`         | `6`                                                       | fpm          |
 | `PHP_FPM_MAX_REQUESTS`              | `500`                                                     | fpm          |
+| `PHP_FPM_PROCESS_CONTROL_TIMEOUT`   | `10s`                                                     | fpm          |
+| `COMPOSER_HOME`                     | `/home/laravel/.composer`                                 | builder      |
+| `NPM_CONFIG_CACHE`                  | `/home/laravel/.npm`                                      | builder      |
 
-Rendered by the entrypoint via `envsubst` against templates in `/usr/local/share/laraoci/templates/`. The generated file is `zz-laraoci.ini`, so any lexically later mount wins.
+`LARAOCI_DEFAULT_BINARY` is a **signal, not a knob** (D23): it tells the entrypoint which binary a dash-first argument means on this image, and overriding it at `docker run` time changes what `docker run … -v` starts. It is listed because `docker inspect` should answer the question without anyone reading a Dockerfile.
+
+`PHP_FPM_PROCESS_CONTROL_TIMEOUT` is the one `PHP_FPM_*` variable that is **not** a pool directive - it renders into `[global]`, and it is what makes `STOPSIGNAL SIGQUIT` mean anything (§7.3).
+
+Rendered by the entrypoint via `envsubst` against templates in `/usr/local/share/laraoci/templates/`. The generated file is `zz-laraoci.ini`, so any lexically later mount wins. The entrypoint **refuses to render a template whose variables are unset or empty**, so a missing value is a loud start-up failure rather than a blank directive that php-fpm silently accepts.
 
 ### 6.5 PHP configuration baseline
 
@@ -428,11 +450,18 @@ CMD ["php", "-v"]
 
 ### 7.2 `cli`
 
-`runtime` plus a default command. For `php artisan migrate`, `tinker`, ad-hoc tasks, and as parent of `queue`/`scheduler`.
+`runtime` plus a default command, two per-SAPI `ENV` values, and the signal that says what a dash-first argument means. For `php artisan migrate`, `tinker`, ad-hoc tasks, and as parent of `queue`/`scheduler`.
 
 ```dockerfile
+ENV LARAOCI_DEFAULT_BINARY=php
+ENV PHP_MEMORY_LIMIT=512M \
+    PHP_MAX_EXECUTION_TIME=0
 CMD ["php", "artisan", "list"]
 ```
+
+`LARAOCI_DEFAULT_BINARY` (D23) is the whole of the difference in behaviour, and it fixes two bugs with one value. Upstream's `docker-php-entrypoint` prepends `php-fpm` whenever the first argument starts with a dash - correct on `fpm`, wrong on every image that inherits the same script from the `-fpm` base (D18). So `docker run cli -r 'echo 1;'` would start an FPM master, **and** the SAPI gate of D22 would read that one-off command as an FPM process and enable a preload the process discards on exit. The LaraOCI entrypoint does the prepend itself, before handing off, so upstream's version sees an argv that no longer starts with a dash and can never fire. The default is `php-fpm`, so an image that does not set the variable behaves exactly as it did before.
+
+The two `ENV`s are §6.4's cli column: a CLI process is not serving an HTTP request, so FPM's request ceiling is the wrong default. `artisan migrate` on a large table must not die at 30 seconds, and `tinker` should not die at 256 MB. `queue` and `scheduler` inherit both, and `builder` sets the same pair for the same reason - Composer's solver on a real Laravel tree does not fit in 256 MB.
 
 No Composer (D6).
 
@@ -445,14 +474,12 @@ The upstream image supplies `php-fpm.d/docker.conf` and `zz-docker.conf`, which 
 FPM concatenates `php-fpm.d/*.conf` in glob order and section headers persist across file boundaries, so the LaraOCI file must declare its own `[www]` header rather than relying on the preceding file's.
 
 ```ini
+[global]
+process_control_timeout = ${PHP_FPM_PROCESS_CONTROL_TIMEOUT}
+
 [www]
 user = laravel
 group = laravel
-listen = 0.0.0.0:9000
-clear_env = no
-catch_workers_output = yes
-decorate_workers_output = no
-access.log = /proc/self/fd/2
 
 pm = ${PHP_FPM_PM}
 pm.max_children = ${PHP_FPM_MAX_CHILDREN}
@@ -469,9 +496,29 @@ php_admin_value[error_log] = /proc/self/fd/2
 php_admin_flag[log_errors] = on
 ```
 
-`clear_env`, the log redirections, and `daemonize` are inherited from upstream and deliberately **not** repeated here - restating them would mean maintaining a second copy that can silently drift. They are asserted in tests instead (§10.1). `EXPOSE 9000` is likewise already set upstream.
+**Correction (M2).** Earlier drafts of this section also set `listen`, `clear_env`, `catch_workers_output`, `decorate_workers_output` and `access.log`. All five are upstream's already - `docker.conf` carries four of them and `zz-docker.conf` carries `daemonize` - and they are **removed** here rather than restated. Verified live on the built image. A second copy is a second thing to drift on a base bump, so they are asserted instead: statically via `php-fpm -tt` in `tests/structure/fpm.yaml`, and behaviourally for `clear_env` by the §10.3 smoke test (the one double-assertion D24 allows). `EXPOSE 9000` is likewise already set upstream and is asserted, not re-declared.
 
-**Healthcheck:** `cgi-fcgi -bind -connect 127.0.0.1:9000` against `/fpm-ping`, requiring `libfcgi-bin` (~200 KB) in `fpm` only. A container that cannot report its own health is worse than one 200 KB larger.
+**`user`/`group` are inert on the default path, and are kept anyway.** The FPM master runs as `laravel`, and a non-root master cannot `setuid`, so these two directives do nothing - php-fpm says so at every start, twice, verified live:
+
+```
+NOTICE: [pool www] 'user' directive is ignored when FPM is not running as root
+NOTICE: [pool www] 'group' directive is ignored when FPM is not running as root
+```
+
+That is **expected output, not a misconfiguration**, and it is named here so nobody "fixes" it later. The lines stay because `www.conf` sets `user = www-data` and sorts *before* this file: they are the only thing standing between `docker run --user 0` and workers running as `www-data` (33), which would break D8's shared-storage ownership contract exactly when someone reaches for `--user 0` to work around a permissions' problem. So this section's original framing - "set only the pieces that are actually missing" - is wrong about these two. They are not missing pieces; they are deliberate no-ops on the default path and a safety net off it.
+
+**The `[global]` section is load-bearing, and so is the `[www]` header that follows it.** `process_control_timeout` is a global directive; php-fpm refuses to start if it appears under `[www]`. And because FPM section headers persist *across* file boundaries, opening `[global]` here means the pool directives below must re-declare `[www]` or they would land in `[global]`.
+
+**`STOPSIGNAL SIGQUIT` is not sufficient on its own** - this was measured, and it contradicts what §6.2 and earlier drafts of this section imply. Against an in-flight request, with FPM's default `process_control_timeout = 0`, SIGQUIT takes the graceful *code path* (the master logs "Finishing" rather than "Terminating") and then exits without waiting for its busy children, truncating the response exactly as SIGTERM does. The timeout is what makes the signal mean anything:
+
+| signal  | `process_control_timeout = 0`      | `= 10s`                           |
+|---------|------------------------------------|-----------------------------------|
+| SIGQUIT | exits 0.2s, response **truncated** | exits 4.9s, response **complete** |
+| SIGTERM | exits 0.1s, response truncated     | exits 0.2s, response truncated    |
+
+It is a ceiling, not a delay: an idle container still stops in ~0.2s. 10s matches Docker's default stop grace, past which `docker stop` sends SIGKILL regardless. Consumers with longer requests must raise **both** this and the orchestrator's grace period (`docker stop -t`, or `terminationGracePeriodSeconds`); raising one silently keeps the shorter.
+
+**Healthcheck:** `cgi-fcgi -bind -connect 127.0.0.1:9000` against `/fpm-ping`, requiring `libfcgi-bin` in `fpm` only - measured at 133 KB installed (41 KB `libfcgi-bin` + 92 KB `libfcgi0t64`), against the ~200 KB estimated here originally. A container that cannot report its own health is worse than one 133 KB larger. `/fpm-ping` and `/fpm-status` are pool-internal paths answered by FPM itself: they never reach PHP, so an application route cannot shadow them and the check stays honest when the application is broken.
 
 ### 7.4 `builder`
 
@@ -489,7 +536,20 @@ FROM ghcr.io/laraoci/fpm:8.4
 COPY --from=build --chown=laravel:laravel /var/www/html /var/www/html
 ```
 
-`COMPOSER_HOME` and the npm cache path are part of the runtime contract so consumers can mount BuildKit caches.
+`COMPOSER_HOME` (`/home/laravel/.composer`) and `NPM_CONFIG_CACHE` (`/home/laravel/.npm`) are part of the runtime contract so consumers can mount BuildKit caches:
+
+```dockerfile
+RUN --mount=type=cache,target=/home/laravel/.composer,uid=1000,gid=1000 \
+    composer install --no-dev --prefer-dist --no-interaction
+```
+
+**The `USER` sequencing is load-bearing (D25).** Root is held for the apt/symlink/mkdir block only; the image returns to `USER laravel` *before* the contract `ENV`s and the `CMD`. Both cache directories are created explicitly and owned `1000:1000`, because a cache path that only root can write turns every consumer's cache mount into a silent no-op - or a build failure - and the `uid=1000` in the mount above would otherwise fight the directory's ownership.
+
+**Composer's toolchain, not a general one.** `builder` carries `git` and `unzip` (Composer's VCS and archive paths), Composer itself and Node/npm - all four arriving as digest-pinned `COPY --from` rather than a third-party apt repository or a piped installer, so the whole toolchain is multi-arch by construction and Renovate updates a digest.
+
+**Limitation: npm packages needing a native build will not compile.** `node-gyp` requires `python3`, which is **not** installed - only the C/C++ toolchain inherited from the upstream PHP image (`make`, `gcc`, `g++`) is present, and that is not enough on its own. Packages shipping prebuilt binaries are unaffected, which covers the ordinary Laravel front-end stack. A consumer needing `node-gyp` should `apt-get install -y python3` in their own build stage - one line, consciously theirs, and the same routing §14 gives Ghostscript.
+
+**Not a production runtime.** It carries a package manager, a VCS client and a JavaScript runtime, none of which belong next to application code that serves requests. Stated in `org.opencontainers.image.description`, applied from `config/images.yml`, and pinned by `tests/structure/builder.yaml`.
 
 **D3a - reversing the v1 draft's amd64-only builder.** The original rationale was that Node toolchain builds under QEMU emulation are punishingly slow. That rationale is obsolete: native ARM64 GitHub-hosted runners are available, so the ARM builder leg runs natively at roughly amd64 speed. Meanwhile, the consumer-side argument is strong - every developer on Apple Silicon running this multi-stage build locally would otherwise emulate the entire `composer install` and `npm ci`. Builder ships multi-arch.
 
@@ -614,7 +674,9 @@ Each image type is its own GHCR package: `ghcr.io/laraoci/{runtime,cli,fpm,build
 
 ### 9.1 Development builds (`pull_request`)
 
-Affected images only - changed paths mapped through the `parent` graph, so a `runtime` change rebuilds everything downstream and a `queue` change rebuilds only `queue`. amd64 only, GHA layer cache, built and loaded but not pushed, full test suite (§10), advisory-only vulnerability scan.
+Affected images only - changed paths mapped through the `parent` graph, so a `runtime` change rebuilds everything downstream and a `queue` change rebuilds only `queue`. amd64 only, built and loaded but not pushed, full test suite (§10), advisory-only vulnerability scan.
+
+**Correction (M2, D27).** This path carries **no GHA layer cache**. A child image's `FROM ghcr.io/laraoci/<parent>` resolves to nothing until M4 publishes, so each leg first builds its own ancestor chain into the local daemon - which requires buildx's `docker` driver, whose builder *is* the daemon. The `docker-container` driver that supports `cache-to`/`cache-from: type=gha` cannot see a loaded image at all, so the two are mutually exclusive on this path. The cache was inert here regardless: PR legs are forbidden from writing the shared cache (so nothing seeds it) and nothing else writes it. The push path of §9.2 keeps the container driver and the cache. `runtime` is rebuilt once per child leg - 9 extra builds per PR at M2 - all in parallel, so wall-clock is unchanged.
 
 ### 9.2 Release builds (tag push or manual dispatch)
 
@@ -695,14 +757,18 @@ Every published image carries OCI labels (`source`, `revision`, `created`, `vers
 ├── bin/
 │   ├── matrix.sh          # images.yml -> GHA JSON matrix
 │   ├── affected.sh        # changed paths -> affected images
+│   ├── build-chain.sh     # an image plus every ancestor, locally (D27)
 │   ├── size-check.sh      # D17 budget enforcement
+│   ├── structure-test.sh  # container-structure-test driver
+│   ├── fetch-tools.sh     # checksum-pinned CI tooling
 │   └── entrypoint.sh
 ├── tests/
-│   ├── structure/*.yaml
-│   ├── fixtures/app/
-│   └── smoke/*.sh
+│   ├── unit/*.bats        # bats: the scripts above
+│   ├── structure/*.yaml   # per-image, plus _common.yaml for the shared contract
+│   ├── fixtures/app/      # the minimal Laravel app the smoke suite drives
+│   └── smoke/             # run.sh + compose.yml + nginx.conf + *.bats
 ├── docs/
-└── .github/workflows/{build,pr,release,scheduled}.yml
+└── .github/workflows/{build,pr,lint,smoke,release,scheduled}.yml
 ```
 
 ---

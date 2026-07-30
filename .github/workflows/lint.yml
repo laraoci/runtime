@@ -9,27 +9,28 @@ on:
 permissions:
   contents: read
 
+# Same shape as pr.yml and smoke.yml. Four jobs per push to a PR branch is the
+# cheapest work in this repository, but it is also the most frequent.
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   shell:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - name: Install tools
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
           mkdir -p "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          bin/fetch-tool.sh \
-            --url https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64 \
-            --sha256 fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1 \
-            --dest "$HOME/.local/bin/shfmt"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" shfmt
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" shellcheck
       - name: shellcheck
         run: |
           set -euo pipefail
+          shellcheck --version
           mapfile -t scripts < <(git ls-files '*.sh')
           shellcheck -S warning "${scripts[@]}"
       - name: shfmt
@@ -42,48 +43,47 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
+      # NOT rhysd/actionlint. The action carried its own version (v1.7.12) beside
+      # tools.env's pin (1.7.7), so `make actions` and this job could disagree -
+      # the exact drift tools.env exists to prevent, in the one shape the
+      # "no unchecked tool" tests could not see.
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" actionlint
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          actionlint --version
+          actionlint
 
   bats:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-      - name: Install yq (mikefarah) and jq
+      - name: Install gettext-base
+        run: sudo apt-get update && sudo apt-get install -y gettext-base
+      - name: Run unit tests
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          bin/fetch-tool.sh \
-            --url https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 \
-            --sha256 fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 \
-            --dest "$HOME/.local/bin/yq"
-          sudo apt-get update && sudo apt-get install -y jq gettext-base
-      - name: Run unit tests
-        run: tests/bats/bin/bats tests/unit
+          bats_bin="$(bin/fetch-tools.sh --path bats)"
+          "$bats_bin" tests/unit
 
   dockerfiles:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
       - name: Install hadolint
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          bin/fetch-tool.sh \
-            --url https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-linux-x86_64 \
-            --sha256 6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47 \
-            --dest "$HOME/.local/bin/hadolint"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" hadolint
       - name: hadolint
         run: |
           set -euo pipefail
-          # tests/bats is a vendored submodule. Its Dockerfiles are third-party
-          # code and hadolint fails on them; this job only passed in CI because
-          # its checkout happened to omit submodules (M6).
-          find images tests -path tests/bats -prune -o \
+          find images tests \
             \( -name 'Dockerfile' -o -name '*.Dockerfile' \) -print0 \
             | xargs -0 -r hadolint

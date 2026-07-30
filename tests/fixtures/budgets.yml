@@ -1,6 +1,13 @@
 version: 1
 defaults:
   registry: ghcr.io/laraoci
+  debian: trixie
+php:
+  # bin/size-check.sh derives the tag it measures from these when LARAOCI_TAG is
+  # unset (CI sets it per leg). Without a `default: true` there is no tag to
+  # derive and the run is a hard error rather than a guess.
+  "8.3": { status: supported }
+  "8.4": { status: supported, default: true }
 size_budgets:
   runtime: 220
   cli: 225

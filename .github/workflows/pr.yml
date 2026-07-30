@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 # Consecutive pushes to a PR otherwise run overlapping full matrices; at M4's
 # 36 legs that is the single largest avoidable CI cost.
@@ -24,17 +23,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install yq (mikefarah) and jq
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          bin/fetch-tool.sh \
-            --url https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 \
-            --sha256 fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 \
-            --dest "$HOME/.local/bin/yq"
-          sudo apt-get update && sudo apt-get install -y jq
-
       - name: Resolve affected images and build the amd64 matrix
         id: gen
         env:
@@ -43,9 +31,10 @@ jobs:
           set -euo pipefail
           base="origin/${BASE_REF}"
 
-          # A plain assignment from a command substitution DOES trip errexit,
-          # where `mapfile < <(...)` does not - so a failure in affected.sh can
-          # no longer be reported as "nothing to build" (M3).
+          # affected.sh exits non-zero when it cannot resolve the base ref, and
+          # this assignment propagates that under errexit. Both halves matter:
+          # the script used to swallow a failed `git diff` and exit 0, so a
+          # guard here alone reported "nothing to build" on a broken ref.
           affected_out="$(bin/affected.sh --base "$base")"
 
           images=()
@@ -66,7 +55,7 @@ jobs:
           # up here simply by adding the file.
           merged='{"include":[]}'
           for img in "${images[@]}"; do
-            df="$(yq -r ".images.\"$img\".dockerfile" config/images.yml)"
+            df="$(IMG="$img" yq -r '.images[strenv(IMG)].dockerfile' config/images.yml)"
             if [[ ! -f "$df" ]]; then
               echo "::notice::skipping $img - $df does not exist yet"
               continue
@@ -96,3 +85,34 @@ jobs:
       dockerfile: ${{ matrix.dockerfile }}
       debian: ${{ matrix.debian }}
       structure_test: true
+
+  # A stable, always-present check to gate branch protection on. It succeeds
+  # only if every matrix leg succeeded (or if there were legitimately zero legs,
+  # e.g. a docs-only PR). Branch protection requires THIS name - never the
+  # volatile per-leg names.
+  pr-required:
+    name: pr-required
+    needs: [ matrix, build ]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    env:
+      # Passed through env: rather than interpolated into the run: body, per the
+      # repo's H1 rule (no ${{ }} in shell). These are trusted result enums, but
+      # the standard is blunt on purpose - honour it rather than carve exceptions.
+      MATRIX_RESULT: ${{ needs.matrix.result }}
+      BUILD_RESULT: ${{ needs.build.result }}
+    steps:
+      - name: Verify upstream jobs did not fail
+        run: |
+          set -euo pipefail
+          # result is one of: success, failure, cancelled, skipped.
+          # 'build' is skipped when there were zero affected legs - a pass, not a
+          # failure. Anything actually failing/cancelled blocks the merge.
+          echo "matrix=$MATRIX_RESULT build=$BUILD_RESULT"
+          if [ "$MATRIX_RESULT" != "success" ]; then
+            echo "matrix job did not succeed"; exit 1
+          fi
+          case "$BUILD_RESULT" in
+            success|skipped) : ;;
+            *) echo "build matrix did not succeed"; exit 1 ;;
+          esac

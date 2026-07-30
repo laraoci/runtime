@@ -11,13 +11,14 @@
 
 ## Quality gates (non-negotiable)
 
-Run before pushing:
+Run before pushing. `make hooks` prints this sequence, so you can paste it:
 
-    shellcheck -S warning bin/*.sh bin/lib/*.sh
-    shfmt -d -i 2 -ci bin
-    tests/bats/bin/bats tests/unit
-    actionlint .github/workflows/*.yml
-    hadolint <any Dockerfile>
+    make tools && make fmt && make lint && make dockerfiles && make actions && make test
+
+Do not run the underlying tools by hand. The Makefile targets lint every tracked
+shell script (`git ls-files '*.sh'`), not just `bin/`, and they use the
+tools.env-pinned versions rather than whatever is on your PATH - which is what
+keeps a local pass and a CI pass meaning the same thing.
 
 Every script starts `set -euo pipefail`. `yq` means **mikefarah/yq v4** (the
 scripts hard-fail on kislyuk/yq).

@@ -1,0 +1,98 @@
+; LaraOCI FPM pool overlay - spec §7.3, LOCI-024. Rendered from this template by
+; /usr/local/bin/laraoci-entrypoint into
+; /usr/local/etc/php-fpm.d/zz-laraoci.conf at container start, and once at build
+; time so the shipped image is valid without an entrypoint.
+;
+; ADDITIVE ONLY. php-fpm.conf includes php-fpm.d/*.conf in glob order:
+;   docker.conf -> www.conf -> zz-docker.conf -> zz-laraoci.conf
+; so this file is last and wins on genuine overlap, and a consumer mounting
+; zzz-mine.conf still wins over it.
+;
+; Everything upstream already sets is deliberately ABSENT. Verified live on
+; runtime: docker.conf carries clear_env = no, access.log = /proc/self/fd/2,
+; catch_workers_output = yes, decorate_workers_output = no and listen = 9000;
+; zz-docker.conf carries daemonize = no. A second copy here is a second thing to
+; drift, so they are asserted instead - statically in tests/structure/fpm.yaml
+; and behaviourally by the LOCI-030 smoke test.
+;
+; ---------------------------------------------------------------------------
+; THE DRAIN. This is what makes STOPSIGNAL SIGQUIT in images/fpm/Dockerfile mean
+; anything, and it is a [global] directive - not a pool one - which is why this
+; file opens a [global] section it would otherwise not need. Under [www]
+; php-fpm refuses to start at all.
+;
+; MEASURED, because the milestone doc and spec §7.3 both say the stop signal is
+; sufficient on its own and it is not. Against an in-flight request, with FPM's
+; default process_control_timeout = 0:
+;
+;   signal   pct=0                        pct=10s
+;   SIGQUIT  exits 0.2s, response TRUNCATED   exits 4.9s, response COMPLETE
+;   SIGTERM  exits 0.1s, response truncated   exits 0.2s, response truncated
+;
+; With the default, SIGQUIT takes the graceful CODE PATH - the master logs
+; "Finishing ..." rather than "Terminating ..." - and then exits without waiting
+; for its busy children, truncating exactly as SIGTERM does. The signal alone
+; buys nothing.
+;
+; It is a CEILING, not a delay: an idle container still stops in ~0.2s, and a
+; busy one waits only as long as the request needs. 10s matches Docker's default
+; stop grace, past which `docker stop` sends SIGKILL regardless - a larger
+; default here would be fiction under plain Docker. Consumers running longer
+; requests must raise THIS AND the orchestrator's grace period together
+; (`docker stop -t`, or terminationGracePeriodSeconds on Kubernetes); raising
+; only one of the two silently keeps the shorter of them.
+[global]
+process_control_timeout = ${PHP_FPM_PROCESS_CONTROL_TIMEOUT}
+
+; The [www] header is load-bearing. FPM section headers persist ACROSS file
+; boundaries, so without it these directives land in whatever section was open
+; when the previous file ended - which, now that this file opens with [global],
+; would be [global] itself. zz-docker.conf does end with a [www] line, but
+; upstream documents it as backwards compatibility "will be removed in 8.6+" -
+; inheriting it is exactly the silent breakage trap 2 is about.
+[www]
+
+; INERT on the normal path, and kept anyway. The FPM master runs as laravel
+; (USER laravel), and a non-root master cannot setuid, so php-fpm logs
+;   NOTICE: [pool www] 'user' directive is ignored when FPM is not running as root
+; twice at every start - expected output, verified live, not a misconfiguration.
+; They stay because they are the only thing between `docker run --user 0` and
+; workers running as www-data (33): www.conf sets user = www-data and sorts
+; BEFORE this file, so removing these two lines would hand a root-started
+; container the wrong worker identity and break the shared-storage ownership
+; contract of D8. images/fpm/Dockerfile asserts these two lines match USER_NAME.
+user = laravel
+group = laravel
+
+; §6.4's fpm rows. The entrypoint refuses to render a template whose variables
+; are unset or empty, so a missing ENV in images/fpm/Dockerfile is a start-up
+; failure rather than a blank directive php-fpm silently accepts.
+pm = ${PHP_FPM_PM}
+pm.max_children = ${PHP_FPM_MAX_CHILDREN}
+pm.start_servers = ${PHP_FPM_START_SERVERS}
+pm.min_spare_servers = ${PHP_FPM_MIN_SPARE_SERVERS}
+pm.max_spare_servers = ${PHP_FPM_MAX_SPARE_SERVERS}
+pm.max_requests = ${PHP_FPM_MAX_REQUESTS}
+
+; The healthcheck target (LOCI-025) and its operator-facing sibling. Both are
+; pool-internal paths handled by FPM itself - they never reach PHP, so they
+; cannot be shadowed by an application route.
+;
+; THAT CUTS BOTH WAYS for pm.status_path: FPM matches it on SCRIPT_NAME before
+; the application is involved, so a consumer whose web server forwards a raw
+; path exposes pool internals - and with ?full, the URI and script of every
+; in-flight request - without touching this image. Kept enabled because it is
+; the only operator-facing view of the pool, and documented under
+; "Security notes" in README.md rather than made opt-in: render() treats an
+; empty value as a fatal misconfiguration, so an opt-out would need an
+; allow-empty mechanism that nothing else in the contract wants.
+ping.path = /fpm-ping
+ping.response = pong
+pm.status_path = /fpm-status
+
+; §6.3 for the WORKERS specifically. docker.conf's error_log is in [global] and
+; covers the master; php_admin_value cannot be overridden by ini_set() in
+; application code, so a stray ini_set('error_log', '/var/log/app.log') cannot
+; put a log file inside the container.
+php_admin_value[error_log] = /proc/self/fd/2
+php_admin_flag[log_errors] = on

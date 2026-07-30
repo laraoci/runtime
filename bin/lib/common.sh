@@ -40,7 +40,7 @@ require_arg() {
 }
 
 # The image graph, read in ONE yq call and validated once, so that matrix.sh and
-# affected.sh cannot disagree about whether config/images.yml is well formed.
+# affected.sh cannot disagree about whether config/images.yml is well-formed.
 #
 # Populates:
 #   IMAGE_NAMES      indexed array, file order

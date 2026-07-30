@@ -1,0 +1,201 @@
+schemaVersion: '2.0.0'
+
+# What `builder` adds to, or overrides in, the inherited contract (§7.4,
+# LOCI-026). Everything shared with the rest of the graph - user, workdir,
+# entrypoint, the twelve extensions, the ImageMagick policy and Ghostscript's
+# absence - is asserted by tests/structure/_common.yaml, which
+# bin/structure-test.sh runs alongside this file on the builder leg.
+#
+# THAT SHARED FILE IS DOING MORE WORK HERE THAN ANYWHERE ELSE, which is why
+# nothing below repeats it. builder is the only image in M2 that drops to
+# USER root, runs an apt transaction and copies binaries in from two foreign
+# images - the three regressions _common.yaml's own header names ("a stray USER
+# root, a package that drags Ghostscript back in, an entrypoint overwritten by a
+# COPY") are all builder's to commit. Running the common contract on this leg IS
+# 🧭 3's and 🧭 4's regression pin; a second copy here would assert the same
+# facts twice and drift on the first edit.
+#
+# The one inversion worth stating: D6 says Composer is absent from every image
+# that runs application code. builder is the exception the rule exists for, so
+# `composer` is asserted PRESENT below where cli and fpm assert it missing.
+
+metadataTest:
+  # §7.4. A bare `docker run builder` should describe itself rather than do
+  # anything: this image has no default job, and the two it might plausibly
+  # pick (`composer install`, `npm ci`) would run against an empty /var/www/html.
+  cmd: ["composer", "--version"]
+
+  labels:
+    # Required by LOCI-026, and the only machine-readable warning a consumer
+    # gets before they base a production image on this one. Applied by
+    # bin/build-chain.sh and by .github/workflows/build.yml from
+    # config/images.yml - asserted here rather than trusted, because a label
+    # that silently stopped being applied would leave the warning nowhere.
+    #
+    # Matched as a regex on the substring, not on the whole description: the
+    # sentence around it is documentation and may be reworded, but this phrase
+    # is the contract.
+    - key: org.opencontainers.image.description
+      value: '.*NOT for production runtime.*'
+      isRegex: true
+
+  envVars:
+    # 🧭 1. builder runs CLI processes - `composer install`, `npm ci`, an
+    # occasional `php artisan`. Left at the inherited php-fpm, a dash-first
+    # argument would start an FPM master in a build stage, and the preload gate
+    # would classify a one-shot dependency install as a long-lived FPM process.
+    - key: LARAOCI_DEFAULT_BINARY
+      value: php
+    # §6.4's cli column, applied here on a reading of the table as being about
+    # SAPI shape rather than about the image literally named `cli`: composer's
+    # dependency solver on a real Laravel tree does not fit in 256 MB, and
+    # neither a solve nor an `npm ci` is a 30-second operation.
+    - key: PHP_MEMORY_LIMIT
+      value: 512M
+    - key: PHP_MAX_EXECUTION_TIME
+      value: "0"
+    # 🧭 3. Part of the published runtime contract (§7.4): these are the paths a
+    # consumer mounts a BuildKit cache onto
+    # (`--mount=type=cache,uid=1000,target=/home/laravel/.composer`). Asserted
+    # as metadata because that is how a consumer discovers them - `docker
+    # inspect`, not a Dockerfile - so a rename is a breaking change to a
+    # documented interface, not an implementation detail.
+    - key: COMPOSER_HOME
+      value: /home/laravel/.composer
+    - key: NPM_CONFIG_CACHE
+      value: /home/laravel/.npm
+    # Explicit rather than assumed. This is what makes composer REFUSE to run as
+    # root instead of printing a warning on every invocation - so a consumer who
+    # builds with `--user 0` finds out immediately rather than accumulating
+    # root-owned files in a cache mount that the laravel user then cannot write.
+    - key: COMPOSER_ALLOW_SUPERUSER
+      value: "0"
+    # An update check is a network call on a machine that may have no route out,
+    # and its output corrupts anything parsing npm's stdout in a build script.
+    - key: NPM_CONFIG_UPDATE_NOTIFIER
+      value: "false"
+
+fileExistenceTests:
+  # The D6 inversion. _common.yaml deliberately says nothing about Composer
+  # because the answer differs per image; this is the one image where its
+  # ABSENCE would be the bug.
+  - name: Composer is present - the exception D6 exists for (§7.4)
+    path: /usr/local/bin/composer
+    shouldExist: true
+
+  # node's own two shims, recreated in RUN 1 because only /usr/local/bin/node
+  # and /usr/local/lib/node_modules were copied from the node image - a
+  # `COPY --from=node /usr/local /usr/local` would have overwritten PHP's entire
+  # installation, which lives in the same prefix. They are symlinks into
+  # node_modules, so their existence also proves that tree arrived intact.
+  - name: the npm shim is present (§7.4)
+    path: /usr/local/bin/npm
+    shouldExist: true
+  - name: the npx shim is present (§7.4)
+    path: /usr/local/bin/npx
+    shouldExist: true
+
+  # 🧭 3's regression pin. Both directories are created at build time, as root,
+  # with laravel ownership, precisely so that a consumer's cache mount has an
+  # existing mount point with the right owner. Get the ownership wrong and
+  # nothing fails loudly: composer and npm both fall back to another location
+  # when their configured cache is unwritable, which turns a cache mount into a
+  # silent full download on every build.
+  - name: the composer cache is owned by laravel (🧭 3, §7.4)
+    path: /home/laravel/.composer
+    shouldExist: true
+    uid: 1000
+    gid: 1000
+    permissions: 'drwxr-xr-x'
+  - name: the npm cache is owned by laravel (🧭 3, §7.4)
+    path: /home/laravel/.npm
+    shouldExist: true
+    uid: 1000
+    gid: 1000
+    permissions: 'drwxr-xr-x'
+
+commandTests:
+  # ------------------------------------------------------------------------
+  # THE TOOLCHAIN. Each tool is asked for its version rather than checked with
+  # `test -x`: a COPY --from lands a binary built for whatever platform the
+  # source image resolved to, and on the arm64 leg (D3a) an amd64 binary is
+  # perfectly present, perfectly executable, and fails with "exec format error"
+  # the moment it runs. Only executing it proves the multi-arch claim.
+  #
+  # The versions are matched by SHAPE, not by value, except where the major is
+  # part of the contract. Both toolchains arrive as digest-pinned COPY --from
+  # and Renovate updates those digests; a test that pinned the patch version
+  # would fail on every bump for no reason.
+  # ------------------------------------------------------------------------
+
+  # Major 2 IS pinned: the image is composer/composer:2-bin, and Composer 3
+  # would be a deliberate migration, not a digest refresh.
+  - name: composer runs and is version 2 (§7.4)
+    command: composer
+    args: ["--version"]
+    expectedOutput: ['Composer version 2\.\d+\.\d+']
+
+  - name: node runs (§7.4, D3a)
+    command: node
+    args: ["--version"]
+    expectedOutput: ['^v\d+\.\d+\.\d+\n$']
+
+  # Goes through the shim, so this covers both the symlink and the node_modules
+  # tree behind it - and it needs `node` on PATH to run at all, which makes it
+  # the one test that proves the two halves of the node COPY agree.
+  - name: npm runs through the recreated shim (§7.4)
+    command: npm
+    args: ["--version"]
+    expectedOutput: ['^\d+\.\d+\.\d+\n$']
+
+  # composer's VCS path: a `require` on a repository, or any package whose dist
+  # download is unavailable, falls back to a git clone.
+  - name: git runs (§7.4)
+    command: git
+    args: ["--version"]
+    expectedOutput: ['^git version \d+\.\d+']
+
+  # composer's archive path: every dist package arrives as a zip.
+  - name: unzip runs (§7.4)
+    command: unzip
+    args: ["-v"]
+    expectedOutput: ['UnZip \d+\.\d+']
+
+  # 🧭 3, proven rather than inferred. The ownership assertions above read the
+  # mode bits; this reads the property those bits exist to produce, as the user
+  # the image actually runs as. It is the difference between "the directory
+  # looks right" and "composer can write its cache".
+  #
+  # The paths are literal, NOT $COMPOSER_HOME/$NPM_CONFIG_CACHE: CST performs
+  # its own substitution on args and deletes any $identifier before the
+  # container sees it, so the variable form would collapse to `touch /probe`
+  # and test something else entirely.
+  - name: both caches are writable by the runtime user (🧭 3, §7.4)
+    command: sh
+    args:
+      - -c
+      - |
+        touch /home/laravel/.composer/probe /home/laravel/.npm/probe && echo CACHES_WRITABLE
+    expectedOutput: ['^CACHES_WRITABLE\n$']
+
+  # §7.4's documented limitation, pinned so it stays a deliberate trade rather
+  # than becoming an accident - but pinned against the REAL reason, which is not
+  # the one the milestone doc gives.
+  #
+  # The doc says an `npm ci` needing node-gyp fails here because PHPIZE_DEPS and
+  # build-essential are absent. Measured on the built image, that is false: the
+  # official php:8.x-fpm-trixie base installs $PHPIZE_DEPS and never removes
+  # them, so gcc, g++, make, autoconf, re2c and ld are present on EVERY image in
+  # the graph, runtime and fpm included. Asserting their absence would fail on
+  # day one.
+  #
+  # What actually stops node-gyp is python3, which node-gyp requires and which
+  # the base does not ship. So this is the assertion that makes §7.4's claim
+  # true, and it is a one-package fix for a consumer who needs it
+  # (`apt-get install -y python3` in their own stage) rather than the whole
+  # build-essential the doc implies.
+  - name: node-gyp cannot run - python3 is absent (§7.4)
+    command: sh
+    args: ["-c", "if command -v python3 >/dev/null 2>&1; then echo FOUND; exit 1; fi; echo ABSENT"]
+    expectedOutput: ['^ABSENT\n$']
+    exitCode: 0

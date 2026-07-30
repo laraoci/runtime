@@ -33,6 +33,10 @@ TPL
 }
 
 teardown() {
+  # Restore write permission before removing: a test that makes conf.d itself
+  # read-only (the read-only-rootfs case) leaves a directory rm -rf cannot
+  # empty, and the failure would surface as an unrelated teardown error.
+  chmod -R u+rwX "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
 
@@ -113,13 +117,95 @@ teardown() {
   [ -z "$output" ]
 }
 
-@test "entrypoint: an unwritable target warns and continues" {
+@test "entrypoint: no special builtin takes a bare redirection (dash exits on it)" {
+  # `:` is a POSIX SPECIAL builtin, and a redirection error on a special builtin
+  # exits a non-interactive shell outright - before `|| true` is ever evaluated,
+  # and without `2>/dev/null` suppressing the shell's own message. So
+  # `: >"$f" 2>/dev/null || true` is soft under bash and FATAL under dash, which
+  # is /bin/sh in the image. Wrap it in a subshell, which contains the exit.
+  #
+  # Static, because the behavioural version below needs both dash and a non-root
+  # uid; this one runs everywhere and is what fails if the bare form comes back.
+  run grep -nE '^[[:space:]]*:[[:space:]]*>' bin/entrypoint.sh
+  [ "$status" -ne 0 ]
+}
+
+@test "entrypoint: stderr is suppressed BEFORE the write it guards, not after" {
+  # Redirections are applied left to right, so `cmd >"$target" 2>/dev/null`
+  # suppresses the wrong stream: >"$target" fails first, while stderr is still
+  # the terminal, and the shell prints its own "cannot create …: Permission
+  # denied". What 2>/dev/null then covers is the stderr of a command that never
+  # ran. `docker run --user 5000` showed that line above the deliberate error
+  # message, which made a designed refusal read as a crash.
+  #
+  # Same family as the special-builtin guard above: a redirection failure the
+  # suppression does not reach. Both are invisible under a writable target,
+  # which is every environment except the one the message exists for.
+  #
+  # Matches a write redirection followed later on the line by 2>/dev/null. The
+  # subshell form `(: >"$f") 2>/dev/null` is correctly ordered - the redirect on
+  # the subshell is applied before anything inside it runs - and does not match,
+  # because its > is inside the parens.
+  run grep -nE '[^)] >"[^"]+" 2>/dev/null' bin/entrypoint.sh
+  [ "$status" -ne 0 ]
+}
+
+@test "entrypoint: an unwritable conf.d does not kill the opt-out (dash, L5)" {
+  # The behavioural half of the guard above, and the case the escape hatch
+  # exists for: on a read-only rootfs conf.d ITSELF is unwritable, not just the
+  # ini. render() then takes the documented soft path - but the preload clear
+  # below it used to exit 2 under dash, so the container died anyway and
+  # LARAOCI_ALLOW_UNWRITABLE_CONFIG=1 bought nothing.
+  #
+  # Runs dash explicitly rather than trusting /bin/sh: bash is /bin/sh on Fedora
+  # and dash on the Ubuntu runners, so via the shebang alone this would be a
+  # test that silently checks nothing on half the machines it runs on.
+  local dash
+  dash="$(command -v dash || true)"
+  [ -n "$dash" ] || skip "dash is not installed"
+  [ "$(id -u)" -ne 0 ] || skip "running as root ignores file permissions"
+
+  # BOTH, and for different reasons. 0444 on the ini is what makes render() take
+  # the soft path - a read-only DIRECTORY alone would not, since rewriting an
+  # existing writable file never needs write permission on its parent. 0555 on
+  # conf.d is what makes the preload clear fail, because that file does not
+  # exist yet and creating it does need the directory.
+  echo 'memory_limit = 999M' >"$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  chmod 0444 "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  chmod 0555 "$PHP_INI_DIR/conf.d"
+  export LARAOCI_ALLOW_UNWRITABLE_CONFIG=1
+  run "$dash" bin/entrypoint.sh php -v
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"handoff: php -v"* ]]
+  [[ "$output" == *"IGNORED"* ]]
+}
+
+@test "entrypoint: an unwritable target is fatal, not a silent fallback" {
+  # This used to warn and start anyway, so `docker run --user 5000 -e
+  # PHP_MEMORY_LIMIT=1G` served traffic at the build-time 256M with one line on
+  # stderr. The asymmetry against an unset variable - which has always been
+  # fatal - is what made it indefensible: both cases end with the operator not
+  # getting the configuration they asked for.
   [ "$(id -u)" -ne 0 ] || skip "running as root ignores file permissions"
   echo 'memory_limit = 999M' >"$PHP_INI_DIR/conf.d/zz-laraoci.ini"
   chmod 0444 "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
   run bin/entrypoint.sh php -v
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is not writable"* ]]
+  [[ "$output" == *"LARAOCI_ALLOW_UNWRITABLE_CONFIG"* ]]
+}
+
+@test "entrypoint: LARAOCI_ALLOW_UNWRITABLE_CONFIG=1 restores the soft fallback" {
+  # The escape hatch for a read-only rootfs, where the build-time configuration
+  # IS the intended one. Opt-in, so the operator has stated that they know the
+  # overrides will not apply.
+  [ "$(id -u)" -ne 0 ] || skip "running as root ignores file permissions"
+  echo 'memory_limit = 999M' >"$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  chmod 0444 "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  export LARAOCI_ALLOW_UNWRITABLE_CONFIG=1
+  run bin/entrypoint.sh php -v
   [ "$status" -eq 0 ]
-  [[ "$output" == *"not writable"* ]]
+  [[ "$output" == *"IGNORED"* ]]
   run cat "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
   [[ "$output" == *"999M"* ]]
 }
@@ -161,4 +247,116 @@ teardown() {
   [ "$status" -eq 0 ]
   after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l)"
   [ "$after" -le "$before" ]
+}
+
+@test "entrypoint: a dash-first argument prepends the image's default binary (🧭 1)" {
+  export LARAOCI_DEFAULT_BINARY=php
+  run bin/entrypoint.sh -v
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"handoff: php -v"* ]]
+}
+
+@test "entrypoint: a dash-first argument on an fpm image still means php-fpm (🧭 1)" {
+  export LARAOCI_DEFAULT_BINARY=php-fpm
+  run bin/entrypoint.sh -v
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"handoff: php-fpm -v"* ]]
+}
+
+@test "entrypoint: an unset default binary behaves exactly as before (🧭 1)" {
+  unset LARAOCI_DEFAULT_BINARY
+  run bin/entrypoint.sh -v
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"handoff: php-fpm -v"* ]]
+}
+
+@test "entrypoint: a dash-invoked CLI command does not enable preload (🧭 1, D22)" {
+  export LARAOCI_DEFAULT_BINARY=php
+  export PHP_OPCACHE_PRELOAD=/usr/local/share/laraoci/preload.php
+  run bin/entrypoint.sh -r 'echo 1;'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not an FPM process"* ]]
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci-preload.ini"
+  [ -z "$output" ]
+}
+
+@test "entrypoint: a dash-invoked fpm command still enables preload (🧭 1)" {
+  export LARAOCI_DEFAULT_BINARY=php-fpm
+  export PHP_OPCACHE_PRELOAD=/usr/local/share/laraoci/preload.php
+  run bin/entrypoint.sh --nodaemonize
+  [ "$status" -eq 0 ]
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci-preload.ini"
+  [[ "$output" == "opcache.preload = /usr/local/share/laraoci/preload.php" ]]
+}
+
+@test "entrypoint: the fpm pool is rendered when its template ships" {
+  export LARAOCI_FPM_CONF_D="$TMP/php-fpm.d"
+  mkdir -p "$LARAOCI_FPM_CONF_D"
+  cat >"$TMP/templates/zz-laraoci-fpm.conf.template" <<'TPL'
+[www]
+pm = ${PHP_FPM_PM}
+pm.max_children = ${PHP_FPM_MAX_CHILDREN}
+TPL
+  export PHP_FPM_PM=dynamic PHP_FPM_MAX_CHILDREN=20
+  run bin/entrypoint.sh php-fpm
+  [ "$status" -eq 0 ]
+  run cat "$LARAOCI_FPM_CONF_D/zz-laraoci.conf"
+  [[ "$output" == *"[www]"* ]]
+  [[ "$output" == *"pm.max_children = 20"* ]]
+}
+
+@test "entrypoint: no fpm template means no pool file (cli, builder)" {
+  export LARAOCI_FPM_CONF_D="$TMP/php-fpm.d"
+  mkdir -p "$LARAOCI_FPM_CONF_D"
+  run bin/entrypoint.sh php -v
+  [ "$status" -eq 0 ]
+  [ ! -e "$LARAOCI_FPM_CONF_D/zz-laraoci.conf" ]
+}
+
+@test "entrypoint: the default pool directory is upstream's php-fpm.d" {
+  # Every other pool test overrides LARAOCI_FPM_CONF_D, so the DEFAULT is the one
+  # value in this file no behavioural test can reach. Getting it wrong used to be
+  # silent as well: render() treated a missing directory as "not writable", logged
+  # a warning and exited 0, so the container started happily with no pool overlay
+  # at all. `php.fpm.d` for `php-fpm.d` shipped exactly that until the build-time
+  # render in images/fpm/Dockerfile caught it. It is a hard failure now rather
+  # than a warning, but the static assertion stays: the real path is root-owned
+  # and outside a test's reach, so nothing behavioural can reach the DEFAULT value.
+  run grep -c 'LARAOCI_FPM_CONF_D:-/usr/local/etc/php-fpm.d' bin/entrypoint.sh
+  [ "$output" -eq 1 ]
+}
+
+@test "entrypoint: an unset PHP_FPM_* variable is fatal, not a blank directive" {
+  export LARAOCI_FPM_CONF_D="$TMP/php-fpm.d"
+  mkdir -p "$LARAOCI_FPM_CONF_D"
+  printf '[www]\npm = ${PHP_FPM_PM}\n' >"$TMP/templates/zz-laraoci-fpm.conf.template"
+  unset PHP_FPM_PM
+  run bin/entrypoint.sh php-fpm
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PHP_FPM_PM is unset"* ]]
+}
+
+@test "entrypoint: a newline in PHP_OPCACHE_PRELOAD is fatal (L3, same rule as the ini)" {
+  # render() refuses a non-printable character because one newline turns a single
+  # variable into "append any directive you like". The preload directive is
+  # written by a bare printf that skipped that check, so PHP_OPCACHE_PRELOAD was
+  # the one variable the guard did not cover - and zz-laraoci-preload.ini sorts
+  # AFTER zz-laraoci.ini, so an injected directive wins over the baseline.
+  export LARAOCI_DEFAULT_BINARY=php-fpm
+  PHP_OPCACHE_PRELOAD="$(printf '/app/preload.php\nauto_prepend_file = /tmp/pwn.php')"
+  export PHP_OPCACHE_PRELOAD
+  run bin/entrypoint.sh php-fpm
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PHP_OPCACHE_PRELOAD contains a non-printable character"* ]]
+}
+
+@test "entrypoint: a rejected preload writes no directive at all" {
+  # Not just "the process died" - the file must not carry the injected line, or a
+  # restart without the variable would still boot with it.
+  export LARAOCI_DEFAULT_BINARY=php-fpm
+  PHP_OPCACHE_PRELOAD="$(printf '/app/preload.php\nauto_prepend_file = /tmp/pwn.php')"
+  export PHP_OPCACHE_PRELOAD
+  run bin/entrypoint.sh php-fpm
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci-preload.ini"
+  [[ "$output" != *"auto_prepend_file"* ]]
 }

@@ -34,9 +34,26 @@ done
 # Changed paths: from git (rename detection OFF so a rename splits into
 # delete-old + add-new, both mapping to the same image; deletions included),
 # or from stdin.
+#
+# THE ASSIGNMENT IS THE POINT, not the mapfile. `mapfile -t x < <(git diff …)`
+# does not observe git's exit status and errexit does not reach into a process
+# substitution, so an unresolvable base ref produced an empty list and a clean
+# exit 0 - which pr.yml reads as "nothing is affected", skips every build leg,
+# and still passes pr-required. A plain command substitution DOES trip errexit,
+# and the explicit `if` reports which ref failed.
 changed=()
 if [[ -n "$base" ]]; then
-  mapfile -t changed < <(git diff --no-renames --name-only "$base")
+  if ! changed_out="$(git diff --no-renames --name-only "$base")"; then
+    echo "error: 'git diff $base' failed - cannot determine affected images" >&2
+    echo "       is the base ref fetched? CI needs fetch-depth: 0" >&2
+    exit 1
+  fi
+  # A truly empty diff is a legitimate answer (a docs-only PR), and must stay
+  # distinct from the failure above. `mapfile <<<""` would yield one empty
+  # element rather than none, so the guard is not cosmetic.
+  if [[ -n "$changed_out" ]]; then
+    mapfile -t changed <<<"$changed_out"
+  fi
 else
   mapfile -t changed
 fi
@@ -77,9 +94,16 @@ for path in "${changed[@]}"; do
     # Documentation and the test inputs that only feed the bats job never
     # rebuild an image.
     docs/* | tests/unit/* | tests/fixtures/* | tests/probe/* | tests/stub/* | tests/bats/*) : ;;
-    # A structure-test config runs ONLY inside a build leg for its own image, so
-    # editing one must build that image - and only that image, since every image
-    # carries its own config (M4).
+    # The shared contract is passed to EVERY image's structure run alongside its
+    # own config (bin/structure-test.sh), so editing it must rebuild the whole
+    # graph. The fallback below already reaches that answer - "_common" is not
+    # an image name, so it takes the be-conservative branch - but by accident.
+    # Named here so the rebuild is a stated consequence of what the file is,
+    # and so a future image called `common` cannot quietly narrow it to one leg.
+    tests/structure/_common.yaml) add_all ;;
+    # Any OTHER structure-test config runs only inside a build leg for its own
+    # image, so editing one must build that image - and only that image, since
+    # every image carries its own config (M4).
     tests/structure/*.yaml)
       name="${path#tests/structure/}"
       name="${name%.yaml}"

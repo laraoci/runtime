@@ -1,0 +1,100 @@
+schemaVersion: '2.0.0'
+
+# What `cli` adds to, or overrides in, the inherited contract. Everything shared
+# with the rest of the graph - user, workdir, entrypoint, the extension set, the
+# ImageMagick policy, Ghostscript's absence - is asserted by
+# tests/structure/_common.yaml, which bin/structure-test.sh runs alongside this
+# file on the cli leg.
+
+metadataTest:
+  cmd: ["php", "artisan", "list"]
+  envVars:
+    # 🧭 1. The value the entrypoint reads for BOTH the binary a dash-first
+    # argument means and the preload classification that follows from it.
+    # `php` is the whole difference between this image and its fpm-based parent.
+    - key: LARAOCI_DEFAULT_BINARY
+      value: php
+    # §6.4's cli column. A CLI process is not serving a request, so FPM's
+    # ceilings are the wrong defaults: `artisan migrate` on a large table must
+    # not die at 30 seconds.
+    - key: PHP_MEMORY_LIMIT
+      value: 512M
+    - key: PHP_MAX_EXECUTION_TIME
+      value: "0"
+
+fileExistenceTests:
+  # Already asserted on runtime, and re-asserted here deliberately: cli is the
+  # image a consumer actually runs artisan in, so it is where someone would be
+  # tempted to add Composer "just for this one command" (D6).
+  - name: Composer is absent (D6)
+    path: /usr/local/bin/composer
+    shouldExist: false
+
+commandTests:
+  # ------------------------------------------------------------------------
+  # THE 🧭 1 PIN. Two independent bugs in two files, fixed by one variable, so
+  # both halves are pinned or the fix can half-rot.
+  #
+  # container-structure-test runs commandTests WITHOUT the image ENTRYPOINT, so
+  # laraoci-entrypoint is invoked explicitly here. That is what makes these
+  # tests of our resolution rather than of Docker's argument handling.
+  # ------------------------------------------------------------------------
+
+  # Half one: the BINARY. Upstream's inherited docker-php-entrypoint prepends
+  # php-fpm to any dash-first argv. If our own prepend ever stops running first,
+  # upstream's fires and this reports (fpm-fcgi).
+  - name: a dash-invoked command reaches the CLI SAPI, not php-fpm (🧭 1)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["-v"]
+    expectedOutput: ['PHP 8\.\d+\.\d+.*\(cli\)']
+    excludedOutput: ['fpm-fcgi']
+
+  # Half two: the CLASSIFICATION. PHP_OPCACHE_PRELOAD is set, so the only thing
+  # keeping the directive out of the file is `launched` resolving to php rather
+  # than php-fpm. A short-lived CLI process builds the preload segment at start
+  # and destroys it at exit, so this is the per-process waste D14/D22 exist to
+  # prevent - and it is silent, which is why it is asserted rather than assumed.
+  #
+  # The entrypoint's own output is discarded so that the byte count is the only
+  # thing on stdout; the file is pre-created at build time and truncated when
+  # preload is off, so it always exists to measure.
+  - name: a dash-invoked command does not enable preload (🧭 1, D14/D22)
+    command: sh
+    args:
+      - -c
+      - |
+        /usr/local/bin/laraoci-entrypoint -v >/dev/null 2>&1
+        wc -c < /usr/local/etc/php/conf.d/zz-laraoci-preload.ini
+    envVars:
+      - key: PHP_OPCACHE_PRELOAD
+        value: /usr/local/share/laraoci/preload.php
+    expectedOutput: ['^ *0\n$']
+
+  # ------------------------------------------------------------------------
+  # The two §6.4 values that differ from the parent, asserted where they land
+  # rather than only where they are declared: an ENV that never reaches the
+  # rendered ini is an ENV that does nothing.
+  # ------------------------------------------------------------------------
+  - name: rendered ini - memory_limit is the cli default, not the fpm one (§6.4)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["php", "-r", "echo ini_get('memory_limit');"]
+    expectedOutput: ['^512M$']
+
+  # READS THE FILE, NOT ini_get(). This assertion used to ask PHP for
+  # ini_get('max_execution_time') and expect 0 - and it passed for the wrong
+  # reason: the CLI SAPI hardcodes max_execution_time=0 and php.ini cannot
+  # override it, so `php -i` reports "0 => 0" on EVERY image. The fpm image,
+  # which renders 30, reports 0 too. The test would therefore have passed even
+  # if this image had shipped the fpm value, which is precisely the regression
+  # it exists to catch.
+  #
+  # Asserting the rendered file tests the real claim - that §6.4's cli value
+  # reached the ini - and is the only form that can distinguish the two images.
+  - name: rendered ini - max_execution_time is unbounded on cli (§6.4)
+    command: sh
+    args:
+      - -c
+      - |
+        /usr/local/bin/laraoci-entrypoint true >/dev/null 2>&1
+        grep -E '^max_execution_time' /usr/local/etc/php/conf.d/zz-laraoci.ini
+    expectedOutput: ['^max_execution_time = 0\n$']

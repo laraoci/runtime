@@ -79,9 +79,157 @@ run_bodies() {
   for f in .github/workflows/*.yml; do
     out="$(run_bodies "$f" | grep -n 'curl ' || true)"
     if [ -n "$out" ]; then
-      echo "$f calls curl directly - use bin/fetch-tool.sh so the asset is verified:" >&2
+      echo "$f calls curl directly - use bin/fetch-tools.sh so the asset is verified:" >&2
       echo "$out" >&2
       false
     fi
+  done
+}
+
+# --- the smoke workflow (LOCI-028) -------------------------------------------
+
+@test "workflows: the smoke matrix is read from config/images.yml, not hardcoded" {
+  # A literal version list keeps passing after config/images.yml deprecates a
+  # version or adds one - the exact drift config/images.yml exists to prevent.
+  # Asserted both ways: no version literal in the workflow's live content, and
+  # the yq read actually present.
+  #
+  # Comments are stripped first - whole-line AND trailing. The prose is allowed
+  # to name 8.3 and 8.5 to explain why a leg must fail independently, and every
+  # pinned action carries a `# vX.Y.Z` marker; what must not exist is a version
+  # this workflow ACTS on without asking config/images.yml.
+  local live
+  live="$(sed -E -e '/^[[:space:]]*#/d' -e 's/[[:space:]]+#.*$//' \
+    .github/workflows/smoke.yml)"
+  run grep -nE '[0-9]+\.[0-9]+' <<<"$live"
+  [ "$status" -ne 0 ]
+
+  run yq -r '[.jobs.matrix.steps[] | select((.run // "") | test("config/images.yml"))] | length' \
+    .github/workflows/smoke.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "workflows: the smoke workflow cancels superseded runs" {
+  # Each leg builds three images and brings up a stack; overlapping runs of a
+  # superseded push are the most expensive idle work in the repository.
+  run yq -r '.concurrency."cancel-in-progress"' .github/workflows/smoke.yml
+  [ "$output" = "true" ]
+}
+
+@test "workflows: every smoke leg fails independently" {
+  # fail-fast would cancel 8.5 the moment 8.3 broke, hiding whether the change
+  # is version-specific - which is the first question a red smoke run raises.
+  run yq -r '.jobs.smoke.strategy."fail-fast"' .github/workflows/smoke.yml
+  [ "$output" = "false" ]
+}
+
+@test "workflows: the smoke job asserts the harness leaked nothing, even when red" {
+  # run.sh tears down in an EXIT trap; this is the check that the trap fired.
+  # `if: always()` is load-bearing - gated on success it would only ever run on
+  # the path where a leak is least likely.
+  run yq -r '[.jobs.smoke.steps[]
+    | select((.run // "") | test("docker volume ls"))
+    | .if // "absent"] | length' .github/workflows/smoke.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+
+  run yq -r '.jobs.smoke.steps[]
+    | select((.run // "") | test("docker volume ls"))
+    | .if // "absent"' .github/workflows/smoke.yml
+  [[ "$output" == *"always()"* ]]
+}
+
+# --- bats-runner pinning (M5 submodule -> pinned tarball migration) ----------
+# These lock in the migration away from the vendored bats-core submodule. The
+# submodule was removed because it pulled ~200 files of third-party code into
+# lint scope and forced `submodules: true` on every checkout; the replacement
+# fetches a SHA-pinned tarball through bin/fetch-bats.sh. Each invariant below
+# is a way that migration could silently regress.
+
+@test "workflows: tools.env pins the runner by 64-hex SHA-256, not just a version (L5)" {
+  # A version alone prevents drift but not substitution - a tagged asset can be
+  # replaced in place. The hash is the trust anchor, so it must be present and
+  # well-formed, matching how shfmt/yq/hadolint are pinned.
+  [ -f tools.env ]
+  # shellcheck disable=SC1091
+  run bash -c 'set -a; . tools.env; printf "%s" "$BATS_SHA256"'
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^[0-9a-f]{64}$ ]]
+}
+
+@test "workflows: tools.env carries a bats version and a matching tag URL" {
+  # shellcheck disable=SC1091
+  . tools.env
+  [ -n "$BATS_VERSION" ]
+  # The URL must reference the same version it claims to pin, or the hash guards
+  # a different artefact than the one named.
+  [[ "$BATS_URL" == *"v${BATS_VERSION}"* ]]
+}
+
+@test "workflows: no workflow re-introduces the bats submodule checkout" {
+  # 'submodules: true' was dropped from every checkout when the submodule went.
+  # Its return means someone re-vendored bats or wired a new submodule without
+  # updating this migration.
+  local f out
+  for f in .github/workflows/*.yml; do
+    out="$(yq -r '.jobs[].steps[] | select(.uses // "" | test("actions/checkout")) | .with.submodules // "absent"' "$f" 2>/dev/null | grep -v '^absent$' || true)"
+    if [ -n "$out" ]; then
+      echo "$f still requests submodules on checkout: $out" >&2
+      false
+    fi
+  done
+}
+
+@test "workflows: nothing references the old tests/bats submodule path" {
+  # Covers the runner invocation AND the hadolint prune that only existed to
+  # skip the vendored tree. Grep the raw files: a lingering path anywhere is a
+  # dangling reference now that tests/bats is gone.
+  run grep -rn 'tests/bats' .github/workflows/
+  [ "$status" -ne 0 ]
+}
+
+@test "workflows: the submodule is fully deregistered (no .gitmodules entry)" {
+  # A .gitmodules stanza left behind re-materialises the submodule on the next
+  # `git submodule update`, quietly undoing the migration.
+  if [ -f .gitmodules ]; then
+    run git config --file .gitmodules --get-regexp '^submodule\.tests/bats\.'
+    [ "$status" -ne 0 ]
+  fi
+}
+
+@test "workflows: the unit-test job fetches bats through the verified fetcher" {
+  # The bats job must obtain the runner via bin/fetch-tools.sh --path bats (which
+  # verifies the hash), not a bare runner path. Asserts the mechanism is wired,
+  # not just that the old submodule path is absent.
+  run yq -r '[.jobs.bats.steps[] | select((.run // "") | test("fetch-tools.sh --path bats"))] | length' \
+    .github/workflows/lint.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "workflows: the pinned fetcher is checksum-guarded and lives in bin/" {
+  # bats and every other tool are fetched by bin/fetch-tools.sh, which downloads
+  # with curl - so it MUST carry the sha256 verification itself, or the curl
+  # simply moved somewhere unchecked. (fetch-bats.sh was folded into it.)
+  [ -x bin/fetch-tools.sh ]
+  [ ! -e bin/fetch-bats.sh ]
+  run grep -c 'sha256sum -c' bin/fetch-tools.sh
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 1 ]
+}
+
+@test "workflows: every pull_request workflow cancels superseded runs (L13)" {
+  # pr.yml and smoke.yml both do, with reasoning about CI cost; lint.yml runs
+  # four jobs on every push to a PR branch and did not.
+  local f trigger group
+  for f in .github/workflows/*.yml; do
+    trigger="$(yq -r '.on | has("pull_request")' "$f")"
+    [ "$trigger" = "true" ] || continue
+    group="$(yq -r '.concurrency.group // ""' "$f")"
+    [ -n "$group" ] || {
+      echo "$f triggers on pull_request but has no concurrency group" >&2
+      false
+    }
   done
 }

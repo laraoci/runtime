@@ -1,0 +1,207 @@
+# The LaraOCI smoke stack (LOCI-028). Driven by tests/smoke/run.sh, which sets
+# every variable below and owns the project name - there is deliberately no
+# top-level `name:` here, because run.sh derives one per PHP version so three
+# legs can run side by side without colliding.
+#
+# Every image reference uses the `:?` form. A missing LARAOCI_PHP would otherwise
+# expand to an empty string and compose would pull `ghcr.io/laraoci/fpm:-trixie`
+# from the network - a confusing failure a long way from its cause.
+#
+# THE TOPOLOGY IS THE POINT. `nginx` waits on `fpm` being *healthy*, not merely
+# started, which is what turns the LOCI-025 healthcheck from an image attribute
+# into an assertion: if cgi-fcgi cannot ping the pool, the stack never comes up
+# and the whole suite fails loudly rather than passing against a dead pool.
+
+volumes:
+  # The application tree, shared by every service. A NAMED VOLUME rather than a
+  # bind mount of tests/fixtures/app, and that is not a stylistic choice: a bind
+  # mount carries the host's uid/gid into the container, so the suite would pass
+  # on a developer laptop where the user happens to be 1000:1000 and fail on any
+  # CI runner where it is not. The volume takes its ownership from the image's
+  # own /var/www/html (1000:1000, created in runtime's RUN 2), so the laravel
+  # user can write to it wherever the suite runs.
+  app:
+
+services:
+  # ---------------------------------------------------------------------------
+  # One-shot services. `profiles: [tools]` keeps them out of `compose up`; they
+  # exist to be invoked with `compose run --rm <name> <cmd>` by run.sh and by the
+  # .bats files of Tasks 11-13.
+  # ---------------------------------------------------------------------------
+
+  # Fills the empty `app` volume from the read-only fixture. tar rather than
+  # `cp -a`: cp -a tries to preserve ownership, which an unprivileged user cannot
+  # do, so it exits non-zero after copying everything. Unprivileged tar simply
+  # extracts as the running user, which is exactly what is wanted here.
+  #
+  # THE EXCLUDES ARE LOAD-BEARING. tar copies the working tree, and it has never
+  # heard of tests/fixtures/app/.gitignore - so a developer who has run composer
+  # install or npm run build in the fixture directory would seed their vendor/
+  # and public/build/ into the volume. LOCI-029 would then "pass" without the
+  # builder image doing anything, and would keep passing after a change that
+  # broke it, while CI - checking out a clean tree - failed.
+  #
+  # The list must cover every GENERATED path, not only the four obvious ones -
+  # which means the nested storage/ and bootstrap/cache .gitignore files as well
+  # as the top-level one. Two that were missed and are now excluded, both
+  # observed being seeded from a real working tree:
+  #
+  #   bootstrap/cache/*.php  Laravel's package-discovery cache. A stale copy is
+  #                          authoritative at boot, so it can mask a discovery
+  #                          failure or name a provider the fresh vendor/ does
+  #                          not contain - the CI-vs-laptop divergence above,
+  #                          with a far less obvious symptom than a missing file.
+  #   storage/logs/*.log     A developer's log carries every exception from every
+  #                          previous run into the volume, so the failure
+  #                          diagnostics print stale errors that have nothing to
+  #                          do with the run that just failed.
+  #
+  # Verify with: git ls-files --others --ignored --exclude-standard
+  #              tests/fixtures/app/
+  # Anything that lists and is not excluded here is a path CI will not have.
+  seed:
+    profiles: [tools]
+    image: ${LARAOCI_REGISTRY:?}/cli:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
+    working_dir: /var/www/html
+    command:
+      - sh
+      - -euc
+      # TWO COMMANDS, NOT A PIPELINE. dash has no pipefail and set -e observes
+      # only the rightmost command, so `tar -cf - | tar -xf -` reported success
+      # whenever the READING tar failed and the writing one consumed a partial
+      # stream - seeding an incomplete tree, which then surfaces several steps
+      # later as a composer or Laravel error with no connection to its cause.
+      - >-
+        tar -C /fixture
+        --exclude=./vendor
+        --exclude=./node_modules
+        --exclude=./public/build
+        --exclude=./.env
+        --exclude=*.sqlite
+        --exclude=./bootstrap/cache/*.php
+        --exclude=./storage/logs/*.log
+        --exclude=./storage/framework/cache/data/*
+        --exclude=./storage/framework/sessions/*
+        --exclude=./storage/framework/views/*
+        -cf /tmp/seed.tar .
+        && tar -C /var/www/html -xf /tmp/seed.tar
+        && rm -f /tmp/seed.tar
+        && test -f /var/www/html/artisan
+    volumes:
+      - type: bind
+        source: ../fixtures/app
+        target: /fixture
+        read_only: true
+      - app:/var/www/html
+
+  # `composer install`, `npm ci`, `npm run build` (LOCI-029). Not a runtime
+  # service: it is the image that carries a package manager and a JavaScript
+  # runtime, and it never serves a request.
+  builder:
+    profiles: [tools]
+    image: ${LARAOCI_REGISTRY:?}/builder:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
+    working_dir: /var/www/html
+    volumes:
+      - app:/var/www/html
+
+  # `php artisan ...` (LOCI-029's migration). Carries the same environment as
+  # `fpm` so that a value asserted over HTTP and the same value read from the CLI
+  # cannot silently diverge.
+  cli:
+    profiles: [tools]
+    image: ${LARAOCI_REGISTRY:?}/cli:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
+    working_dir: /var/www/html
+    environment:
+      LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
+      # A THROWAWAY TEST KEY, not a secret. It is committed on purpose: the
+      # fixture ships no .env (LOCI-030 depends on the environment being the
+      # only source of configuration), and without APP_KEY every web route 500s
+      # in EncryptCookies before it reaches the assertion - which reads as "the
+      # image is broken" rather than "the app is unconfigured". Fixed rather
+      # than generated per run so a failure is reproducible.
+      #
+      # NEVER copy this into anything that stores real data.
+      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
+      # Laravel 13 defaults the session store to `database`, and the fixture
+      # ships migrations for jobs, cache and widgets but deliberately not for
+      # sessions - so the default 500s on the first request that touches one.
+      # `file` is the smaller fix than carrying a framework migration, and it
+      # earns its keep: it writes to storage/framework/sessions on the shared
+      # named volume, which proves the laravel user can write into the mount.
+      SESSION_DRIVER: file
+    volumes:
+      - app:/var/www/html
+
+  # ---------------------------------------------------------------------------
+  # The long-running pair, brought up by `compose up`.
+  # ---------------------------------------------------------------------------
+
+  # No `healthcheck:` key: the image ships one (LOCI-025) and restating it here
+  # would test this file's copy rather than the image's. `condition:
+  # service_healthy` below reads whatever the image declares.
+  fpm:
+    image: ${LARAOCI_REGISTRY:?}/fpm:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
+    environment:
+      # LOCI-030's payload. Reaching env() inside a request proves clear_env = no
+      # survived; with FPM's default the route reports MISSING and everything
+      # else stays green.
+      LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
+      # Same throwaway key the cli service carries, and it must stay identical:
+      # a request served by fpm and a command run through cli are asserted to
+      # agree about the application, which they cannot do across two keys.
+      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
+      # Must match cli for the same reason APP_KEY must.
+      SESSION_DRIVER: file
+    volumes:
+      - app:/var/www/html
+
+  nginx:
+    # Pinned by digest like every other third-party image in this repo, and
+    # verified multi-arch (linux/amd64 + linux/arm64) so an arm64 runner needs no
+    # emulation. nginx:1.29-alpine, resolved 2026-07-28.
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    depends_on:
+      fpm:
+        condition: service_healthy
+    ports:
+      # Bound to loopback, never 0.0.0.0: this stack has no authentication and
+      # serves a fixture that echoes its own environment. run.sh derives the port
+      # from the PHP version so concurrent local runs cannot collide.
+      - "127.0.0.1:${LARAOCI_SMOKE_PORT:?}:80"
+    volumes:
+      # Read-only: nginx serves public/build/* and must never be able to write
+      # into the application tree.
+      - app:/var/www/html:ro
+      - type: bind
+        source: ./nginx.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+
+  # ---------------------------------------------------------------------------
+  # M3 (LOCI-036 / LOCI-037). Declared now, behind a profile that nothing in M2
+  # activates, so that milestone adds a command and an assertion rather than a
+  # topology. The images do not exist yet; a service under an inactive profile is
+  # never instantiated, so `compose config` and `compose up` are unaffected.
+  # ---------------------------------------------------------------------------
+
+  queue:
+    profiles: [m3]
+    image: ${LARAOCI_REGISTRY:?}/queue:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
+    working_dir: /var/www/html
+    environment:
+      LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
+      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
+      SESSION_DRIVER: file
+    volumes:
+      - app:/var/www/html
+
+  scheduler:
+    profiles: [m3]
+    image: ${LARAOCI_REGISTRY:?}/scheduler:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
+    working_dir: /var/www/html
+    environment:
+      LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
+      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
+      SESSION_DRIVER: file
+    volumes:
+      - app:/var/www/html

@@ -142,6 +142,11 @@ RUN set -eux; \
 # allows everything, and the memory limit reverts to a host-derived default. A
 # single backtick in the file is enough to cause that.
 #
+# The expected value (256 MiB = 268435456) is config/imagemagick/policy.xml's
+# `resource name="memory"`. Changing it there means changing it here and in
+# tests/structure/_common.yaml - three files, deliberately, because a canary
+# that reads its expectation from the thing it is checking proves nothing.
+#
 # The PDF probe file must EXIST. A missing path throws "unable to open image",
 # which is an ImagickException too - so asserting only that an exception is
 # raised (as §10.1 suggests) passes even with no policy at all.
@@ -149,7 +154,10 @@ RUN set -eux; \
 # @-prefixed indirect reads are NOT asserted: ImageMagick 7 fails them with "no
 # decode delegate" rather than a policy denial, so the path rule cannot be
 # proven this way. MVG and TEXT are asserted instead - they do go through the
-# coder policy.
+# coder policy - as are MSVG, SVG, INLINE and LABEL. EPHEMERAL is denied in the
+# policy and absent from this list for the same reason @* is: it fails with
+# "no decode delegate" before the coder policy is reached, so asserting it
+# would prove nothing.
 #
 # The policy arrives as a BIND MOUNT, not a COPY. A COPY commits the file to its
 # own layer, where `rm` in a later instruction hides it without reclaiming it -
@@ -166,7 +174,7 @@ RUN --mount=type=bind,source=config/imagemagick/policy.xml,target=/tmp/policy.xm
     if [ -z "$found" ]; then \
       echo "FAIL: no /etc/ImageMagick-* directory - refusing to ship imagick without a policy" >&2; exit 1; fi; \
     echo "laraoci: ImageMagick policy installed to $found"; \
-    php -r '$f = "/tmp/laraoci-policy-check"; file_put_contents($f, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n"); $mem = (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY); if ($mem !== 256 * 1048576) { fwrite(STDERR, "FAIL: policy.xml was not parsed - memory limit is $mem, expected " . (256 * 1048576) . "\n"); exit(1); } foreach (["PDF:$f", "MVG:$f", "TEXT:$f"] as $spec) { try { (new Imagick())->readImage($spec); fwrite(STDERR, "FAIL: $spec was ALLOWED\n"); exit(1); } catch (ImagickException $e) { if (!preg_match("/(security policy|not authoriz)/i", $e->getMessage())) { fwrite(STDERR, "FAIL: $spec threw without a policy message: " . $e->getMessage() . "\n"); exit(1); } } } unlink($f); echo "laraoci: policy verified live (memory limit and PDF/MVG/TEXT denials)\n";'
+    php -r '$f = "/tmp/laraoci-policy-check"; file_put_contents($f, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n"); $mem = (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY); if ($mem !== 256 * 1048576) { fwrite(STDERR, "FAIL: policy.xml was not parsed - memory limit is $mem, expected " . (256 * 1048576) . "\n"); exit(1); } foreach (["PDF:$f", "MVG:$f", "TEXT:$f", "MSVG:$f", "SVG:$f", "INLINE:$f", "LABEL:$f"] as $spec) { try { (new Imagick())->readImage($spec); fwrite(STDERR, "FAIL: $spec was ALLOWED\n"); exit(1); } catch (ImagickException $e) { if (!preg_match("/(security policy|not authoriz)/i", $e->getMessage())) { fwrite(STDERR, "FAIL: $spec threw without a policy message: " . $e->getMessage() . "\n"); exit(1); } } } unlink($f); echo "laraoci: policy verified live (memory limit and PDF/MVG/TEXT denials)\n";'
 
 COPY --chmod=0644 config/php/zz-laraoci.ini.template /usr/local/share/laraoci/templates/
 COPY --chmod=0755 bin/entrypoint.sh /usr/local/bin/laraoci-entrypoint
@@ -196,6 +204,20 @@ ENV PHP_MEMORY_LIMIT=256M \
     MAGICK_THREAD_LIMIT=1 \
     MAGICK_TMPDIR=/tmp
 
+# 🧭 1 (M2). The single source of truth for what a dash-first argument means on
+# this image. laraoci-entrypoint reads it TWICE over - for the binary it
+# prepends, and for the preload classification that follows from it - so the two
+# can never disagree. `php-fpm` is correct here because this image IS fpm-based
+# (D18): `docker run <runtime> -v` reports (fpm-fcgi), which is what M1 verified
+# and what the entrypoint's own fallback preserves for anything that does not
+# set this.
+#
+# Declared rather than left to that fallback, so `docker inspect` answers the
+# question without anyone reading a shell script - and so that a descendant
+# which is not an FPM process (cli, queue, scheduler, builder) is visibly
+# OVERRIDING a stated default rather than introducing a variable from nowhere.
+ENV LARAOCI_DEFAULT_BINARY=php-fpm
+
 # ---------------------------------------------------------------------------
 # RUN 4 - BOUNDARY: must come after the ENV defaults and after the entrypoint
 # is in place, because it renders through the entrypoint itself.
@@ -223,10 +245,16 @@ RUN set -eux; \
 WORKDIR /var/www/html
 
 # §6.2 requires this stated rather than inherited; the explicitness is the
-# documentation. NOTE FOR M2: the upstream fpm image sets SIGQUIT, and php-fpm
-# treats SIGQUIT as graceful shutdown and SIGTERM as immediate termination.
-# images/fpm/Dockerfile MUST set `STOPSIGNAL SIGQUIT` back. SIGTERM is correct
-# here because cli, queue, and scheduler trap it through pcntl.
+# documentation. It overrides the upstream -fpm image's SIGQUIT, and it is
+# correct for MOST of the graph but not all of it: cli, queue and scheduler trap
+# SIGTERM through pcntl, while php-fpm reads SIGTERM as immediate termination
+# and SIGQUIT as the graceful drain.
+#
+# images/fpm/Dockerfile therefore restores SIGQUIT, and every image is checked
+# against images.<name>.stopsignal in config/images.yml by
+# .github/workflows/build.yml - container-structure-test has no field for a stop
+# signal, and a container cannot read its own. A child that sets nothing
+# inherits this line, so the check also catches this line going missing.
 STOPSIGNAL SIGTERM
 
 USER ${USER_NAME}
@@ -235,23 +263,27 @@ USER ${USER_NAME}
 # execs docker-php-entrypoint, which execs the command - no wrapper is left in
 # the process tree and signals reach the real process.
 #
-# NOTE FOR M2, second carry-forward (the first is STOPSIGNAL above).
-# docker-php-entrypoint is INHERITED from the fpm base, and the fpm variant
-# prepends `php-fpm` - not `php` - when the first argument starts with a dash:
+# THE DASH-FIRST ARGUMENT (D20, 🧭 1). docker-php-entrypoint is INHERITED from
+# the fpm base, and the fpm variant prepends `php-fpm` - not `php` - whenever
+# the first argument starts with a dash:
 #
 #   if [ "${1#-}" != "$1" ]; then set -- php-fpm "$@"; fi
 #
-# Verified live: `docker run <runtime> -v` reports `PHP 8.4.23 (fpm-fcgi)`,
-# where `docker run <runtime> php -v` reports `(cli)`. Correct here, because
-# this image IS fpm-based (D18). But every descendant inherits that script, so
-# in M2 `docker run laraoci/cli -v` would also start FPM.
+# Correct for THIS image, which is fpm-based (D18), and wrong for every
+# descendant that is not an FPM process - and wrong twice over, because
+# bin/entrypoint.sh used to read the same dash as "this is FPM" and enable
+# opcache.preload on a process that discards it at exit (D14/D22).
 #
-# The fix is TWO changes that must land together, or 🧭 4 breaks:
-#   1. images/cli/Dockerfile ships its own docker-php-entrypoint prepending `php`.
-#   2. bin/entrypoint.sh's `-*) launched=php-fpm` mapping stops being true for
-#      that image and must follow, or a dash-invoked CLI command gets classified
-#      as FPM and silently enables opcache.preload - the exact per-process
-#      preload waste D14/🧭 4 exists to prevent.
-# Both need a structure-test assertion in tests/structure/cli.yaml.
+# Resolved in bin/entrypoint.sh rather than by forking upstream's script per
+# image, which would leave a copy to drift on the next base bump. The entrypoint
+# does the prepend ITSELF, from LARAOCI_DEFAULT_BINARY above, so upstream's line
+# sees an argv that no longer begins with a dash and can never fire. The same
+# variable decides the preload classification, so the binary and the gate read
+# one value and cannot disagree.
+#
+# Verified against the real upstream script: LARAOCI_DEFAULT_BINARY=php makes a
+# dash-invoked command report (cli), and with the variable unset - this image
+# before M2 - it still reports (fpm-fcgi). tests/structure/cli.yaml pins both
+# halves on the image where getting it wrong would matter.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/laraoci-entrypoint"]
 CMD ["php", "-v"]
