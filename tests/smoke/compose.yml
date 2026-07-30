@@ -66,6 +66,11 @@ services:
     command:
       - sh
       - -euc
+      # TWO COMMANDS, NOT A PIPELINE. dash has no pipefail and set -e observes
+      # only the rightmost command, so `tar -cf - | tar -xf -` reported success
+      # whenever the READING tar failed and the writing one consumed a partial
+      # stream - seeding an incomplete tree, which then surfaces several steps
+      # later as a composer or Laravel error with no connection to its cause.
       - >-
         tar -C /fixture
         --exclude=./vendor
@@ -78,8 +83,10 @@ services:
         --exclude=./storage/framework/cache/data/*
         --exclude=./storage/framework/sessions/*
         --exclude=./storage/framework/views/*
-        -cf - .
-        | tar -C /var/www/html -xf -
+        -cf /tmp/seed.tar .
+        && tar -C /var/www/html -xf /tmp/seed.tar
+        && rm -f /tmp/seed.tar
+        && test -f /var/www/html/artisan
     volumes:
       - type: bind
         source: ../fixtures/app

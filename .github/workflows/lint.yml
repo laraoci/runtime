@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Same shape as pr.yml and smoke.yml. Four jobs per push to a PR branch is the
+# cheapest work in this repository, but it is also the most frequent.
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   shell:
     runs-on: ubuntu-latest

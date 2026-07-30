@@ -142,6 +142,11 @@ RUN set -eux; \
 # allows everything, and the memory limit reverts to a host-derived default. A
 # single backtick in the file is enough to cause that.
 #
+# The expected value (256 MiB = 268435456) is config/imagemagick/policy.xml's
+# `resource name="memory"`. Changing it there means changing it here and in
+# tests/structure/_common.yaml - three files, deliberately, because a canary
+# that reads its expectation from the thing it is checking proves nothing.
+#
 # The PDF probe file must EXIST. A missing path throws "unable to open image",
 # which is an ImagickException too - so asserting only that an exception is
 # raised (as §10.1 suggests) passes even with no policy at all.

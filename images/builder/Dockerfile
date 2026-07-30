@@ -36,8 +36,8 @@ ENV PHP_MEMORY_LIMIT=512M \
 # would overwrite PHP's entire installation, which lives in the same prefix.
 # node's binary is glibc-linked against the same Debian suite as this image.
 COPY --from=composer/composer:2-bin@sha256:cf313f79f608ebab80220796327f341ae663b9fa8065c73c6148c9b67f0b13b3 /composer /usr/local/bin/composer
-COPY --from=node:LTS-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573 /usr/local/bin/node /usr/local/bin/node
-COPY --from=node:LTS-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573 /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node:lts-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573 /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:lts-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be126426176fde6fe7d08ab13b7f50573 /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 # ---------------------------------------------------------------------------
 # 🧭 3, first half - root time. git and unzip are composer's VCS and archive

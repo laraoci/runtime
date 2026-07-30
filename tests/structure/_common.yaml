@@ -77,6 +77,11 @@ fileExistenceTests:
     shouldExist: true
     permissions: '-rwxr-xr-x'
   - name: ImageMagick policy is installed (§3.2)
+    # Hardcoded to -7 where the Dockerfile DETECTS -7 or -6. Deliberate: trixie
+    # is ImageMagick 7, and a suite bump that lands on 6 should fail here and be
+    # a conscious decision rather than passing silently on a different policy
+    # path. Detection in the build is about surviving the bump; this is about
+    # noticing it.
     path: /etc/ImageMagick-7/policy.xml
     shouldExist: true
   - name: Ghostscript binary is absent (§3.2)
@@ -135,6 +140,11 @@ commandTests:
   # The canary. If ImageMagick's tokenizer rejects policy.xml it loads an EMPTY
   # policy and allows everything, with no warning anywhere. A resource limit
   # that survived is the cheapest proof the file was actually read.
+  #
+  # 268435456 is 256 MiB - config/imagemagick/policy.xml's `resource
+  # name="memory"`, restated rather than derived on purpose: a canary that read
+  # its expectation from the file it is checking would pass against an empty
+  # policy. images/runtime/Dockerfile RUN 3 carries the third copy.
   - name: policy.xml was parsed at all (§3.2)
     command: php
     args: ["-r", "echo (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY);"]

@@ -116,6 +116,22 @@ jobs:
             leaked=1
           fi
 
+          # Docker creates a missing bind-mount source as a root-owned directory,
+          # so a compose file whose relative path resolves wrongly leaves a tree
+          # behind that the three checks above cannot see - and that git does not
+          # report either, because it does not track empty directories.
+          untracked="$(git status --porcelain --untracked-files=all)"
+          if [[ -n "$untracked" ]]; then
+            echo "::error::smoke run left files in the working tree:"
+            echo "$untracked"
+            leaked=1
+          fi
+          stray="$(find tests -type d -empty -not -path 'tests/fixtures/app/*' -print)"
+          if [[ -n "$stray" ]]; then
+            echo "::error::smoke run left empty directories: ${stray//$'\n'/ }"
+            leaked=1
+          fi
+
           exit "$leaked"
 
   # Stable gate for branch protection over the dynamic smoke matrix. Require THIS

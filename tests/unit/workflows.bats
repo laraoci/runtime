@@ -218,3 +218,18 @@ run_bodies() {
   [ "$status" -eq 0 ]
   [ "$output" -ge 1 ]
 }
+
+@test "workflows: every pull_request workflow cancels superseded runs (L13)" {
+  # pr.yml and smoke.yml both do, with reasoning about CI cost; lint.yml runs
+  # four jobs on every push to a PR branch and did not.
+  local f trigger group
+  for f in .github/workflows/*.yml; do
+    trigger="$(yq -r '.on | has("pull_request")' "$f")"
+    [ "$trigger" = "true" ] || continue
+    group="$(yq -r '.concurrency.group // ""' "$f")"
+    [ -n "$group" ] || {
+      echo "$f triggers on pull_request but has no concurrency group" >&2
+      false
+    }
+  done
+}
