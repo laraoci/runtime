@@ -25,6 +25,18 @@
   through the path policy - it fails them with "no decode delegate" instead - so
   this rule is unproven at runtime and must not be asserted as if it fired.
 
+  MSVG and SVG are denied alongside MVG because they are the same vector engine
+  under other names. Denying the external rsvg delegate does not close that
+  path - it opens it: with no delegate available, an SVG read falls back to
+  ImageMagick's INTERNAL renderer, which is the MVG code. Consumers who process
+  user-supplied SVGs must do it outside Imagick.
+
+  EPHEMERAL is denied and deliberately UNPROVEN, exactly like pattern="@*". On
+  IM7 a read of it fails with "no decode delegate for this image format" before
+  the coder policy is consulted, so no test can show this rule firing - and a
+  test that appeared to would be passing for the wrong reason. INLINE and LABEL
+  DO route through the coder policy and are asserted. Measured on 7.1.2.
+
   thread=1, with MAGICK_THREAD_LIMIT=1 in the environment, is a correctness fix
   as much as a security one: OpenMP pools are per process, so twenty FPM
   children each opening one will thrash a CPU-limited container. Consumers doing
@@ -33,7 +45,8 @@
 <policymap>
     <policy domain="delegate" rights="none" pattern="*"/>
     <policy domain="coder" rights="none" pattern="{PS,PS2,PS3,EPS,PDF,XPS}"/>
-    <policy domain="coder" rights="none" pattern="{MSL,MVG,MAGICK,TEXT,SHOW,WIN,PLT}"/>
+    <policy domain="coder" rights="none" pattern="{MSL,MVG,MSVG,SVG,MAGICK,TEXT,SHOW,WIN,PLT}"/>
+    <policy domain="coder" rights="none" pattern="{EPHEMERAL,INLINE,LABEL}"/>
     <policy domain="coder" rights="none" pattern="{URL,HTTP,HTTPS,FTP}"/>
     <policy domain="path"  rights="none" pattern="@*"/>
     <policy domain="resource" name="memory" value="256MiB"/>

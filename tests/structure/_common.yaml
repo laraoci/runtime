@@ -147,7 +147,7 @@ commandTests:
   # @-prefixed indirect reads are deliberately absent: on IM7 they fail with
   # "no decode delegate for this image format", never reaching the path policy,
   # so an assertion on them proves nothing about `pattern="@*"`.
-  - name: PDF, MVG and TEXT coders are denied by policy (§3.2, through PHP - no identify in the image)
+  - name: the denied coders are denied by policy (§3.2, through PHP - no identify in the image)
     command: sh
     args:
       - -c
@@ -161,13 +161,27 @@ commandTests:
       # stderr, which lets grep make the assertion without needing an $e to
       # inspect. The probe file is written first so a missing-file error cannot
       # masquerade as a policy denial.
+      #
+      # MSVG and SVG are here because denying MVG alone left the same vector
+      # engine reachable under two other names: with delegates denied, an SVG
+      # read falls back to ImageMagick's INTERNAL renderer rather than rsvg.
+      #
+      # EPHEMERAL is denied in policy.xml and deliberately NOT asserted. On IM7
+      # a read of it fails with "no decode delegate for this image format"
+      # before IsCoderAuthorized is ever consulted, so an assertion here would
+      # pass without proving the policy fired - the same reason pattern="@*" is
+      # not asserted either. Measured on ImageMagick 7.1.2.
       - |
         php -r 'file_put_contents("/tmp/policy-probe", "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n");'
         { php -r '(new Imagick())->readImage("PDF:/tmp/policy-probe");' 2>&1
           php -r '(new Imagick())->readImage("MVG:/tmp/policy-probe");' 2>&1
           php -r '(new Imagick())->readImage("TEXT:/tmp/policy-probe");' 2>&1
+          php -r '(new Imagick())->readImage("MSVG:/tmp/policy-probe");' 2>&1
+          php -r '(new Imagick())->readImage("SVG:/tmp/policy-probe");' 2>&1
+          php -r '(new Imagick())->readImage("INLINE:/tmp/policy-probe");' 2>&1
+          php -r '(new Imagick())->readImage("LABEL:/tmp/policy-probe");' 2>&1
         } | grep -c 'not allowed by the security policy'
-    expectedOutput: ['^3\n$']
+    expectedOutput: ['^7\n$']
 
   - name: imagick still decodes JPEG, PNG and WebP after the purge (LOCI-014)
     command: php

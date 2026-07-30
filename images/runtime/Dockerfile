@@ -149,7 +149,10 @@ RUN set -eux; \
 # @-prefixed indirect reads are NOT asserted: ImageMagick 7 fails them with "no
 # decode delegate" rather than a policy denial, so the path rule cannot be
 # proven this way. MVG and TEXT are asserted instead - they do go through the
-# coder policy.
+# coder policy - as are MSVG, SVG, INLINE and LABEL. EPHEMERAL is denied in the
+# policy and absent from this list for the same reason @* is: it fails with
+# "no decode delegate" before the coder policy is reached, so asserting it
+# would prove nothing.
 #
 # The policy arrives as a BIND MOUNT, not a COPY. A COPY commits the file to its
 # own layer, where `rm` in a later instruction hides it without reclaiming it -
@@ -166,7 +169,7 @@ RUN --mount=type=bind,source=config/imagemagick/policy.xml,target=/tmp/policy.xm
     if [ -z "$found" ]; then \
       echo "FAIL: no /etc/ImageMagick-* directory - refusing to ship imagick without a policy" >&2; exit 1; fi; \
     echo "laraoci: ImageMagick policy installed to $found"; \
-    php -r '$f = "/tmp/laraoci-policy-check"; file_put_contents($f, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n"); $mem = (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY); if ($mem !== 256 * 1048576) { fwrite(STDERR, "FAIL: policy.xml was not parsed - memory limit is $mem, expected " . (256 * 1048576) . "\n"); exit(1); } foreach (["PDF:$f", "MVG:$f", "TEXT:$f"] as $spec) { try { (new Imagick())->readImage($spec); fwrite(STDERR, "FAIL: $spec was ALLOWED\n"); exit(1); } catch (ImagickException $e) { if (!preg_match("/(security policy|not authoriz)/i", $e->getMessage())) { fwrite(STDERR, "FAIL: $spec threw without a policy message: " . $e->getMessage() . "\n"); exit(1); } } } unlink($f); echo "laraoci: policy verified live (memory limit and PDF/MVG/TEXT denials)\n";'
+    php -r '$f = "/tmp/laraoci-policy-check"; file_put_contents($f, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n"); $mem = (int) Imagick::getResourceLimit(Imagick::RESOURCETYPE_MEMORY); if ($mem !== 256 * 1048576) { fwrite(STDERR, "FAIL: policy.xml was not parsed - memory limit is $mem, expected " . (256 * 1048576) . "\n"); exit(1); } foreach (["PDF:$f", "MVG:$f", "TEXT:$f", "MSVG:$f", "SVG:$f", "INLINE:$f", "LABEL:$f"] as $spec) { try { (new Imagick())->readImage($spec); fwrite(STDERR, "FAIL: $spec was ALLOWED\n"); exit(1); } catch (ImagickException $e) { if (!preg_match("/(security policy|not authoriz)/i", $e->getMessage())) { fwrite(STDERR, "FAIL: $spec threw without a policy message: " . $e->getMessage() . "\n"); exit(1); } } } unlink($f); echo "laraoci: policy verified live (memory limit and PDF/MVG/TEXT denials)\n";'
 
 COPY --chmod=0644 config/php/zz-laraoci.ini.template /usr/local/share/laraoci/templates/
 COPY --chmod=0755 bin/entrypoint.sh /usr/local/bin/laraoci-entrypoint
