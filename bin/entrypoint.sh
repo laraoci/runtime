@@ -88,7 +88,12 @@ render() {
   #
   # The opt-out exists for the read-only-rootfs case, where the build-time
   # configuration IS the intended one - but it has to be stated.
-  if ! cat "$tmp" >"$target" 2>/dev/null; then
+  # 2>/dev/null BEFORE >"$target", not after. Redirections are applied left to
+  # right, so with the suppression last the shell's own "cannot create …:
+  # Permission denied" is written while stderr is still the terminal - it is
+  # cat's stderr that gets suppressed, and cat never runs. The deliberate
+  # message below was arriving underneath a line that made it look like a crash.
+  if ! cat "$tmp" 2>/dev/null >"$target"; then
     if [ "${LARAOCI_ALLOW_UNWRITABLE_CONFIG:-0}" = "1" ]; then
       log "warning: $target is not writable - keeping the build-time configuration."
       log "         Every override for this file is being IGNORED"
@@ -152,7 +157,8 @@ preload_ini="$CONF_D/zz-laraoci-preload.ini"
 if [ -n "${PHP_OPCACHE_PRELOAD:-}" ] &&
   { [ "$launched" = "php-fpm" ] || [ "${LARAOCI_PRELOAD_FORCE:-0}" = "1" ]; }; then
   reject_unprintable PHP_OPCACHE_PRELOAD "$PHP_OPCACHE_PRELOAD" "$(basename "$preload_ini")"
-  if printf 'opcache.preload = %s\n' "$PHP_OPCACHE_PRELOAD" >"$preload_ini" 2>/dev/null; then
+  # Suppression before the redirect, for the reason spelled out in render().
+  if printf 'opcache.preload = %s\n' "$PHP_OPCACHE_PRELOAD" 2>/dev/null >"$preload_ini"; then
     log "preload enabled: $PHP_OPCACHE_PRELOAD"
   else
     log "warning: cannot write $preload_ini; preload not enabled"

@@ -130,6 +130,26 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
+@test "entrypoint: stderr is suppressed BEFORE the write it guards, not after" {
+  # Redirections are applied left to right, so `cmd >"$target" 2>/dev/null`
+  # suppresses the wrong stream: >"$target" fails first, while stderr is still
+  # the terminal, and the shell prints its own "cannot create …: Permission
+  # denied". What 2>/dev/null then covers is the stderr of a command that never
+  # ran. `docker run --user 5000` showed that line above the deliberate error
+  # message, which made a designed refusal read as a crash.
+  #
+  # Same family as the special-builtin guard above: a redirection failure the
+  # suppression does not reach. Both are invisible under a writable target,
+  # which is every environment except the one the message exists for.
+  #
+  # Matches a write redirection followed later on the line by 2>/dev/null. The
+  # subshell form `(: >"$f") 2>/dev/null` is correctly ordered - the redirect on
+  # the subshell is applied before anything inside it runs - and does not match,
+  # because its > is inside the parens.
+  run grep -nE '[^)] >"[^"]+" 2>/dev/null' bin/entrypoint.sh
+  [ "$status" -ne 0 ]
+}
+
 @test "entrypoint: an unwritable conf.d does not kill the opt-out (dash, L5)" {
   # The behavioural half of the guard above, and the case the escape hatch
   # exists for: on a read-only rootfs conf.d ITSELF is unwritable, not just the
