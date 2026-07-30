@@ -37,7 +37,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
+      # NOT rhysd/actionlint. The action carried its own version (v1.7.12) beside
+      # tools.env's pin (1.7.7), so `make actions` and this job could disagree -
+      # the exact drift tools.env exists to prevent, in the one shape the
+      # "no unchecked tool" tests could not see.
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" actionlint
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          actionlint --version
+          actionlint
 
   bats:
     runs-on: ubuntu-latest

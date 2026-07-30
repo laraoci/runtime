@@ -218,3 +218,22 @@ pin_for() {
   run grep -c 'fetch-tools.sh --dest .* shellcheck' .github/workflows/lint.yml
   [ "$output" -ge 1 ]
 }
+
+@test "tools: no workflow installs a TOOL through a marketplace action (L5)" {
+  # The bare-curl test above reads only run: bodies, so a tool introduced with
+  # `uses:` was invisible to it - which is how rhysd/actionlint@v1.7.12 sat
+  # beside tools.env's 1.7.7 pin without anything noticing.
+  #
+  # The allowlist is actions that DO something (checkout, buildx, login, build),
+  # as opposed to actions that INSTALL a tool tools.env should be pinning.
+  local f out
+  for f in .github/workflows/*.yml; do
+    out="$(yq -r '.jobs[].steps[] | select(has("uses")) | .uses' "$f" 2>/dev/null |
+      grep -vE '^(actions/checkout|docker/setup-buildx-action|docker/login-action|docker/build-push-action)@' || true)"
+    if [ -n "$out" ]; then
+      echo "$f installs a tool through an action - pin it in tools.env instead:" >&2
+      echo "$out" >&2
+      false
+    fi
+  done
+}
