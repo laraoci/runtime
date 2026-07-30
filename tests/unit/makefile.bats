@@ -34,10 +34,16 @@ recipe_lines() {
 
 @test "makefile: action recipes delegate to bin/ or a pinned tool, nothing else" {
   # The core invariant. Every recipe line of an action target must start with a
-  # known delegate: a bin/ script, the pinned bats/shellcheck/shfmt, or the
-  # fetch-bats path expansion. Pure-output targets (help, hooks) are exempt -
-  # they only printf.
-  local allowed='^(bin/|shellcheck |\$\(BATS\)|\$\{BATS\}|\$\(TOOLS_BIN\)/)'
+  # known delegate: a bin/ script, a fetcher-resolved tool ($(BATS),
+  # $(SHELLCHECK)), or a binary under $(TOOLS_BIN). Pure-output targets (help,
+  # hooks) are exempt - they only printf.
+  #
+  # A bare `shellcheck ` used to be allowed here, back when the lint recipe took
+  # it from PATH. That alternative is deliberately gone: the whole point of
+  # pinning shellcheck in tools.env is that an unpinned copy off PATH can no
+  # longer decide whether the tree lints, and this list is what would let it
+  # back in silently.
+  local allowed='^(bin/|\$\(BATS\)|\$\{BATS\}|\$\(SHELLCHECK\)|\$\(TOOLS_BIN\)/)'
   local target line
   for target in test lint fmt fmt-fix matrix affected sizes structure dockerfiles actions; do
     while IFS= read -r line; do

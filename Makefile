@@ -19,6 +19,11 @@
 # Assigned with = (recursive), not :=, so `make help` triggers no download.
 BATS = $$(bin/fetch-tools.sh --path bats)
 
+# Resolved through the fetcher, like BATS: shellcheck's tarball has a versioned
+# top-level directory, so its runner lives under .cache/tools/src rather than
+# .cache/tools/bin and a literal path here would go stale on every bump.
+SHELLCHECK = $$(bin/fetch-tools.sh --path shellcheck)
+
 # All pinned linters/formatters land here via `make tools`. Recipes call the
 # cached binaries so local runs use the same pinned versions as CI.
 TOOLS_BIN = .cache/tools/bin
@@ -47,8 +52,8 @@ tools: ## Fetch all pinned dev tools (shfmt, yq, hadolint, actionlint, bats)
 test: ## Run the unit test suite under the pinned bats
 	$(BATS) tests/unit
 
-lint: ## shellcheck every tracked shell script
-	shellcheck -S warning $$(git ls-files '*.sh')
+lint: ## shellcheck every tracked shell script, under the pinned shellcheck
+	$(SHELLCHECK) -S warning $$(git ls-files '*.sh')
 
 fmt: ## Check shell formatting (no changes)
 	$(TOOLS_BIN)/shfmt -d -i 2 -ci $$(git ls-files '*.sh')

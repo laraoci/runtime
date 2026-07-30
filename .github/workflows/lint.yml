@@ -20,9 +20,11 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           bin/fetch-tools.sh --dest "$HOME/.local/bin" shfmt
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" shellcheck
       - name: shellcheck
         run: |
           set -euo pipefail
+          shellcheck --version
           mapfile -t scripts < <(git ls-files '*.sh')
           shellcheck -S warning "${scripts[@]}"
       - name: shfmt

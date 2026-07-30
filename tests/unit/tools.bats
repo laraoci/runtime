@@ -16,7 +16,7 @@ setup() {
   # Guards against a tool being dropped from iteration while its vars linger.
   # CONTAINER_STRUCTURE_TEST was absent from this list, which is why nothing
   # caught that it could not be fetched by name at all.
-  for t in SHFMT YQ HADOLINT ACTIONLINT BATS CONTAINER_STRUCTURE_TEST; do
+  for t in SHFMT YQ HADOLINT ACTIONLINT BATS CONTAINER_STRUCTURE_TEST SHELLCHECK; do
     case " $LARAOCI_TOOLS " in
       *" $t "*) : ;;
       *) echo "$t missing from LARAOCI_TOOLS" >&2; false ;;
@@ -206,4 +206,15 @@ pin_for() {
   run bin/fetch-tools.sh --list nosuchtool
   [ "$status" -eq 2 ]
   [[ "$output" == *"is not a tool declared in tools.env"* ]]
+}
+
+@test "tools: shellcheck is pinned, not taken from PATH" {
+  # The one linter whose version was uncontrolled, and the one whose output
+  # changes most between releases - so a local pass and a CI pass could mean
+  # different things. Both callers must go through the pinned copy.
+  [ -n "$SHELLCHECK_VERSION" ]
+  run grep -c 'SHELLCHECK) -S warning' Makefile
+  [ "$output" -ge 1 ]
+  run grep -c 'fetch-tools.sh --dest .* shellcheck' .github/workflows/lint.yml
+  [ "$output" -ge 1 ]
 }
