@@ -33,6 +33,10 @@ TPL
 }
 
 teardown() {
+  # Restore write permission before removing: a test that makes conf.d itself
+  # read-only (the read-only-rootfs case) leaves a directory rm -rf cannot
+  # empty, and the failure would surface as an unrelated teardown error.
+  chmod -R u+rwX "$TMP" 2>/dev/null || true
   rm -rf "$TMP"
 }
 
@@ -113,13 +117,75 @@ teardown() {
   [ -z "$output" ]
 }
 
-@test "entrypoint: an unwritable target warns and continues" {
+@test "entrypoint: no special builtin takes a bare redirection (dash exits on it)" {
+  # `:` is a POSIX SPECIAL builtin, and a redirection error on a special builtin
+  # exits a non-interactive shell outright - before `|| true` is ever evaluated,
+  # and without `2>/dev/null` suppressing the shell's own message. So
+  # `: >"$f" 2>/dev/null || true` is soft under bash and FATAL under dash, which
+  # is /bin/sh in the image. Wrap it in a subshell, which contains the exit.
+  #
+  # Static, because the behavioural version below needs both dash and a non-root
+  # uid; this one runs everywhere and is what fails if the bare form comes back.
+  run grep -nE '^[[:space:]]*:[[:space:]]*>' bin/entrypoint.sh
+  [ "$status" -ne 0 ]
+}
+
+@test "entrypoint: an unwritable conf.d does not kill the opt-out (dash, L5)" {
+  # The behavioural half of the guard above, and the case the escape hatch
+  # exists for: on a read-only rootfs conf.d ITSELF is unwritable, not just the
+  # ini. render() then takes the documented soft path - but the preload clear
+  # below it used to exit 2 under dash, so the container died anyway and
+  # LARAOCI_ALLOW_UNWRITABLE_CONFIG=1 bought nothing.
+  #
+  # Runs dash explicitly rather than trusting /bin/sh: bash is /bin/sh on Fedora
+  # and dash on the Ubuntu runners, so via the shebang alone this would be a
+  # test that silently checks nothing on half the machines it runs on.
+  local dash
+  dash="$(command -v dash || true)"
+  [ -n "$dash" ] || skip "dash is not installed"
+  [ "$(id -u)" -ne 0 ] || skip "running as root ignores file permissions"
+
+  # BOTH, and for different reasons. 0444 on the ini is what makes render() take
+  # the soft path - a read-only DIRECTORY alone would not, since rewriting an
+  # existing writable file never needs write permission on its parent. 0555 on
+  # conf.d is what makes the preload clear fail, because that file does not
+  # exist yet and creating it does need the directory.
+  echo 'memory_limit = 999M' >"$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  chmod 0444 "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  chmod 0555 "$PHP_INI_DIR/conf.d"
+  export LARAOCI_ALLOW_UNWRITABLE_CONFIG=1
+  run "$dash" bin/entrypoint.sh php -v
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"handoff: php -v"* ]]
+  [[ "$output" == *"IGNORED"* ]]
+}
+
+@test "entrypoint: an unwritable target is fatal, not a silent fallback" {
+  # This used to warn and start anyway, so `docker run --user 5000 -e
+  # PHP_MEMORY_LIMIT=1G` served traffic at the build-time 256M with one line on
+  # stderr. The asymmetry against an unset variable - which has always been
+  # fatal - is what made it indefensible: both cases end with the operator not
+  # getting the configuration they asked for.
   [ "$(id -u)" -ne 0 ] || skip "running as root ignores file permissions"
   echo 'memory_limit = 999M' >"$PHP_INI_DIR/conf.d/zz-laraoci.ini"
   chmod 0444 "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
   run bin/entrypoint.sh php -v
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is not writable"* ]]
+  [[ "$output" == *"LARAOCI_ALLOW_UNWRITABLE_CONFIG"* ]]
+}
+
+@test "entrypoint: LARAOCI_ALLOW_UNWRITABLE_CONFIG=1 restores the soft fallback" {
+  # The escape hatch for a read-only rootfs, where the build-time configuration
+  # IS the intended one. Opt-in, so the operator has stated that they know the
+  # overrides will not apply.
+  [ "$(id -u)" -ne 0 ] || skip "running as root ignores file permissions"
+  echo 'memory_limit = 999M' >"$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  chmod 0444 "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  export LARAOCI_ALLOW_UNWRITABLE_CONFIG=1
+  run bin/entrypoint.sh php -v
   [ "$status" -eq 0 ]
-  [[ "$output" == *"not writable"* ]]
+  [[ "$output" == *"IGNORED"* ]]
   run cat "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
   [[ "$output" == *"999M"* ]]
 }
@@ -229,12 +295,13 @@ TPL
 
 @test "entrypoint: the default pool directory is upstream's php-fpm.d" {
   # Every other pool test overrides LARAOCI_FPM_CONF_D, so the DEFAULT is the one
-  # value in this file no behavioural test can reach - and getting it wrong is
-  # silent: render() treats a missing directory as "not writable", logs a warning
-  # and exits 0, so the container starts happily with no pool overlay at all.
-  # `php.fpm.d` for `php-fpm.d` shipped exactly that until the build-time render
-  # in images/fpm/Dockerfile caught it. Pinned statically because the real path
-  # is root-owned and outside a test's reach.
+  # value in this file no behavioural test can reach. Getting it wrong used to be
+  # silent as well: render() treated a missing directory as "not writable", logged
+  # a warning and exited 0, so the container started happily with no pool overlay
+  # at all. `php.fpm.d` for `php-fpm.d` shipped exactly that until the build-time
+  # render in images/fpm/Dockerfile caught it. It is a hard failure now rather
+  # than a warning, but the static assertion stays: the real path is root-owned
+  # and outside a test's reach, so nothing behavioural can reach the DEFAULT value.
   run grep -c 'LARAOCI_FPM_CONF_D:-/usr/local/etc/php-fpm.d' bin/entrypoint.sh
   [ "$output" -eq 1 ]
 }

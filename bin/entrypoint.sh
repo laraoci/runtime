@@ -76,8 +76,31 @@ render() {
     die "unsubstituted placeholders remain after rendering $template"
   fi
 
+  # FATAL BY DEFAULT. Writing this file is how every PHP_* variable reaches PHP,
+  # so a container that cannot write it starts on the BUILD-TIME configuration
+  # and silently ignores everything the operator set - which is the same outcome
+  # as an unset variable, and that has always been fatal. The asymmetry was the
+  # bug, not the strictness.
+  #
+  # Reachable in normal operation, not only on a read-only rootfs: the target is
+  # pre-created owned by the image's own uid, so `docker run --user 5000` and a
+  # mismatched securityContext.runAsUser both land here.
+  #
+  # The opt-out exists for the read-only-rootfs case, where the build-time
+  # configuration IS the intended one - but it has to be stated.
   if ! cat "$tmp" >"$target" 2>/dev/null; then
-    log "warning: $target is not writable; keeping the build-time configuration"
+    if [ "${LARAOCI_ALLOW_UNWRITABLE_CONFIG:-0}" = "1" ]; then
+      log "warning: $target is not writable - keeping the build-time configuration."
+      log "         Every override for this file is being IGNORED"
+      log "         (LARAOCI_ALLOW_UNWRITABLE_CONFIG=1)."
+    else
+      log "error: $target is not writable."
+      log "       The container would start on the build-time configuration and"
+      log "       silently ignore every PHP_* override you set. Run as the uid"
+      log "       the image was built for (1000 by default), or set"
+      log "       LARAOCI_ALLOW_UNWRITABLE_CONFIG=1 to accept those defaults."
+      exit 1
+    fi
   fi
 
   rm -f "$tmp"
@@ -128,20 +151,25 @@ preload_ini="$CONF_D/zz-laraoci-preload.ini"
 
 if [ -n "${PHP_OPCACHE_PRELOAD:-}" ] &&
   { [ "$launched" = "php-fpm" ] || [ "${LARAOCI_PRELOAD_FORCE:-0}" = "1" ]; }; then
-  if [ -n "${PHP_OPCACHE_PRELOAD:-}" ] &&
-    { [ "$launched" = "php-fpm" ] || [ "${LARAOCI_PRELOAD_FORCE:-0}" = "1" ]; }; then
-    reject_unprintable PHP_OPCACHE_PRELOAD "$PHP_OPCACHE_PRELOAD" "$(basename "$preload_ini")"
-    if printf 'opcache.preload = %s\n' "$PHP_OPCACHE_PRELOAD" >"$preload_ini" 2>/dev/null; then
-      log "preload enabled: $PHP_OPCACHE_PRELOAD"
-    else
-      log "warning: cannot write $preload_ini; preload not enabled"
-    fi
+  reject_unprintable PHP_OPCACHE_PRELOAD "$PHP_OPCACHE_PRELOAD" "$(basename "$preload_ini")"
+  if printf 'opcache.preload = %s\n' "$PHP_OPCACHE_PRELOAD" >"$preload_ini" 2>/dev/null; then
+    log "preload enabled: $PHP_OPCACHE_PRELOAD"
+  else
+    log "warning: cannot write $preload_ini; preload not enabled"
   fi
 else
   if [ -n "${PHP_OPCACHE_PRELOAD:-}" ]; then
     log "PHP_OPCACHE_PRELOAD is set but '$launched' is not an FPM process; ignoring (set LARAOCI_PRELOAD_FORCE=1 to override)"
   fi
-  : >"$preload_ini" 2>/dev/null || true
+  # Clearing a stale directive stays SOFT - turning preload off in a file that
+  # is already absent is not worth a dead container, and the --user escape
+  # depends on it. The subshell is what makes it soft: `:` is a POSIX special
+  # builtin, so a redirection failure exits a non-interactive shell before
+  # `|| true` is reached and without 2>/dev/null suppressing the message. Under
+  # bash that never showed; under dash - /bin/sh in the image - a read-only
+  # conf.d killed the container here even with LARAOCI_ALLOW_UNWRITABLE_CONFIG=1
+  # set, which is precisely the deployment that flag exists to serve.
+  (: >"$preload_ini") 2>/dev/null || true
 fi
 
 # 🧭 2: chain rather than replace. Upstream prepends the default binary when the

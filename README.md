@@ -44,6 +44,19 @@ read once by the LaraOCI entrypoint. Overriding it changes what a dash-invoked
 command starts; it is documented so `docker inspect` answers the question
 without anyone reading a Dockerfile.
 
+### `LARAOCI_ALLOW_UNWRITABLE_CONFIG` — for a read-only root filesystem
+
+The entrypoint renders `${PHP_INI_DIR}/conf.d/zz-laraoci.ini` at start, and that
+file is how every `PHP_*` variable reaches PHP. It is pre-created owned by the
+image's own uid, so a container run as a different user — `docker run --user
+5000`, or a `securityContext.runAsUser` that does not match — **cannot write it
+and will refuse to start**, rather than serving traffic on the build-time
+defaults while ignoring everything you set.
+
+If the build-time configuration is what you want — a read-only root filesystem,
+say — set `LARAOCI_ALLOW_UNWRITABLE_CONFIG=1`. The container then starts and
+logs which file it could not write. Your `PHP_*` overrides will not apply.
+
 ### `fpm` - pool sizing and shutdown
 
 | Variable                          | Default   | Notes                                      |
