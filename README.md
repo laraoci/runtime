@@ -109,9 +109,8 @@ endpoints back it:
 | `/fpm-status` | FPM's own status page, for operators                 |
 
 Both are answered by FPM itself and never reach PHP, so an application route
-cannot shadow them, and they keep working when your application does not. Neither
-is exposed through your web server unless you route to it deliberately - and
-`/fpm-status` should not be public.
+cannot shadow them, and they keep working when your application does not. See
+[Security notes](#security-notes) before routing to `/fpm-status`.
 
 In Compose, `condition: service_healthy` is what turns this into a real gate:
 
@@ -210,6 +209,39 @@ into a named volume, brings up `fpm` behind nginx, and tears the whole stack dow
 unconditionally - including on failure and on Ctrl-C:
 
     tests/smoke/run.sh --php 8.4                   # add --keep to inspect the stack
+
+## Security notes
+
+### `/fpm-status` is enabled, and your web server must not route to it
+
+`fpm` ships `pm.status_path = /fpm-status`. FPM answers it **itself**, matching
+on `SCRIPT_NAME` before the request reaches PHP — so it is unaffected by your
+application's routes, and your application cannot shadow, protect or disable it.
+
+It reports pool internals: process manager, active and idle children, listen
+queue depth, slow-request count. With `?full` it adds the URI, script and
+runtime of every request in flight.
+
+The standard Laravel nginx configuration never exposes it: every dynamic request
+arrives as `SCRIPT_NAME=/index.php`, so FPM never sees `/fpm-status`. You expose
+it by forwarding a raw path — a `location ~ \.php$` block combined with a
+`try_files` that passes the original URI, or a broadened Caddy `php_fastcgi`
+matcher. **Check your web server config; the failure is silent and on your
+side.**
+
+`/fpm-ping` is different and safe to leave reachable: it returns the fixed
+string `pong` and discloses nothing. The image's own `HEALTHCHECK` depends on it.
+
+### The images run as uid 1000 and expect to write their own config
+
+See [`LARAOCI_ALLOW_UNWRITABLE_CONFIG`](#laraoci_allow_unwritable_config--for-a-read-only-root-filesystem).
+A container run as another uid refuses to start rather than silently ignoring
+your `PHP_*` settings.
+
+### `builder` is not a production runtime
+
+It carries a package manager, a VCS client and a JavaScript runtime. Use it in a
+build stage and copy the result into `fpm`, `cli`, `queue` or `scheduler`.
 
 ## License
 

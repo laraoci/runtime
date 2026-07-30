@@ -77,6 +77,15 @@ pm.max_requests = ${PHP_FPM_MAX_REQUESTS}
 ; The healthcheck target (LOCI-025) and its operator-facing sibling. Both are
 ; pool-internal paths handled by FPM itself - they never reach PHP, so they
 ; cannot be shadowed by an application route.
+;
+; THAT CUTS BOTH WAYS for pm.status_path: FPM matches it on SCRIPT_NAME before
+; the application is involved, so a consumer whose web server forwards a raw
+; path exposes pool internals - and with ?full, the URI and script of every
+; in-flight request - without touching this image. Kept enabled because it is
+; the only operator-facing view of the pool, and documented under
+; "Security notes" in README.md rather than made opt-in: render() treats an
+; empty value as a fatal misconfiguration, so an opt-out would need an
+; allow-empty mechanism that nothing else in the contract wants.
 ping.path = /fpm-ping
 ping.response = pong
 pm.status_path = /fpm-status
