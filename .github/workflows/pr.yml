@@ -55,7 +55,7 @@ jobs:
           # up here simply by adding the file.
           merged='{"include":[]}'
           for img in "${images[@]}"; do
-            df="$(yq -r ".images.\"$img\".dockerfile" config/images.yml)"
+            df="$(IMG="$img" yq -r '.images[strenv(IMG)].dockerfile' config/images.yml)"
             if [[ ! -f "$df" ]]; then
               echo "::notice::skipping $img - $df does not exist yet"
               continue

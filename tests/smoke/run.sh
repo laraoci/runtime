@@ -56,7 +56,12 @@ cd "$REPO_ROOT"
 # Resolve the version against config/images.yml rather than trusting the flag. A
 # typo would otherwise surface as a docker pull of a tag that does not exist,
 # several minutes and one confusing error message later.
-status="$(yq -r ".php.\"$php\".status // \"absent\"" config/images.yml)"
+#
+# strenv, not interpolation: this is the ONE query in the repository that takes
+# its value straight from the command line, and it runs BEFORE anything has
+# validated the value's shape. bin/build-chain.sh applies the same reasoning to
+# --image and --php.
+status="$(PHP="$php" yq -r '.php[strenv(PHP)].status // "absent"' config/images.yml)"
 case "$status" in
   supported) ;;
   deprecated)
@@ -72,7 +77,7 @@ esac
 registry="$(yq -r '.defaults.registry' config/images.yml)"
 # The per-version Debian override is the trixie-transition mechanism; honouring
 # it here keeps the smoke tags identical to the ones bin/build-chain.sh produces.
-debian="$(yq -r ".php.\"$php\".debian // .defaults.debian" config/images.yml)"
+debian="$(PHP="$php" yq -r '.php[strenv(PHP)].debian // .defaults.debian' config/images.yml)"
 
 # COMPOSE PROJECT NAMES CANNOT CONTAIN A DOT. Compose rejects
 # `laraoci-smoke-8.4` with "must consist only of lowercase alphanumeric

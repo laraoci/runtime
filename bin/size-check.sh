@@ -128,7 +128,7 @@ fail=0
 missing=0
 for image in "${budget_images[@]}"; do
   [[ -n "$image_filter" && "$image" != "$image_filter" ]] && continue
-  budget_mb="$(yq -r ".size_budgets.\"$image\"" "$CONFIG")"
+  budget_mb="$(IMAGE="$image" yq -r '.size_budgets[strenv(IMAGE)]' "$CONFIG")"
   ref="$registry/$image:$tag"
 
   # An image that is not in the daemon cannot be measured, and `docker save` on

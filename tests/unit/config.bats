@@ -52,3 +52,22 @@ setup() {
   run bash -c "yq -r '[.images[] | select((.description // \"\") == \"\")] | length' config/images.yml"
   [ "$output" -eq 0 ]
 }
+
+@test "config: no script interpolates a value into a yq expression" {
+  # bin/build-chain.sh, bin/size-check.sh and bin/structure-test.sh all state
+  # this rule in comments; four sites did the opposite, and two of them
+  # (tests/smoke/run.sh) queried with an unvalidated --php argument. strenv()
+  # passes the value through the environment, where it can never be read as
+  # query syntax.
+  #
+  # The pattern is a double quote immediately followed by a $ inside a yq
+  # expression: .php."$php", .size_budgets."$image".
+  local hits
+  hits="$(grep -rn 'yq[^|]*\."\$' --include='*.sh' --include='*.yml' \
+    bin tests/smoke .github/workflows || true)"
+  if [ -n "$hits" ]; then
+    echo "value interpolated into a yq expression - use strenv() instead:" >&2
+    echo "$hits" >&2
+    false
+  fi
+}
