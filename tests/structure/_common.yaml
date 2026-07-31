@@ -59,8 +59,14 @@ metadataTest:
       value: /var/www/html
     - key: LARAOCI_PRELOAD_PATHS
       value: vendor/laravel/framework/src/Illuminate,vendor/composer
+    # /Console/ is the D33 entry and the only one that is not in §7.7's original
+    # list. It belongs by the list's own logic - every other entry is a subtree
+    # that is not on the serving hot path - and it is load-bearing: with
+    # vendor/symfony excluded (§7.7), Illuminate\Console\Command cannot link, and
+    # 78 command subclasses fail behind it. Measured, it removes 131 of 176
+    # startup warnings and 2.35 MB of preload memory.
     - key: LARAOCI_PRELOAD_IGNORE
-      value: /tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/
+      value: /tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/
     - key: MAGICK_THREAD_LIMIT
       value: "1"
     - key: MAGICK_TMPDIR

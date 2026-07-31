@@ -84,6 +84,7 @@ PHP versions, Debian releases, extension sets, and image types live in `config/i
 | **D26** | `builder` inherits the hardened `policy.xml` and the Ghostscript purge **unchanged**     | An artifact built in a weaker environment than it runs in is the classic production-only surprise; `builder` is also the image most likely to meet untrusted input, since CI runs it against whatever a pull request contains (§3.2, §14)                                                                                                    |
 | **D27** | A child leg **builds its own ancestor chain** into the local daemon                      | Until M4 pushes, `ghcr.io/laraoci/runtime:*` exists in no registry and every matrix leg is a separate runner. `bin/build-chain.sh` builds ancestors in topological order on the `docker` driver, whose builder *is* the daemon; the `docker-container` driver cannot see a loaded image at all. No-ops once `push: true` (§9.1)              |
 | **D28** | `org.opencontainers.image.base.*` on child images is **wrong until M4** - accepted debt  | The label still names `php:<v>-fpm-<suite>` where the real base is `laraoci/runtime`. The PR path builds with `--load`, where no manifest digest exists, so M2 could not emit a truthful `base.digest` even if it corrected `base.name`. Recorded so it reads as known debt rather than as a defect discovered later (§11)                   |
+| **D33** | **`/Console/` joins the default `LARAOCI_PRELOAD_IGNORE`**                               | The consequence of excluding `vendor/symfony` (§7.7), not an independent choice: without it `Illuminate\Console\Command` cannot link and ~78 command subclasses fail behind it, so the default compiled 130 classes that could never be preloaded and warned 176 times per start. Measured 2026-07-31 on a Laravel 13 tree: -131 warnings, -2.35 MB, at a cost of 80 preloaded classes that no `fpm` request and no steady-state `queue` worker touches. It belongs by the list's own logic - every other entry is a subtree off the serving hot path (§7.7) |
 
 ### 3.4 Why `runtime` uses the `-fpm` upstream variant (D18)
 
@@ -593,7 +594,7 @@ $root   = getenv('LARAOCI_PRELOAD_ROOT') ?: '/var/www/html';
 $paths  = getenv('LARAOCI_PRELOAD_PATHS')
        ?: 'vendor/laravel/framework/src/Illuminate,vendor/composer';
 $ignore = getenv('LARAOCI_PRELOAD_IGNORE')
-       ?: '/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/';
+       ?: '/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/';
 
 $ignores  = array_filter(explode(',', $ignore));
 $compiled = $skipped = 0;
@@ -647,6 +648,8 @@ Constraints documented alongside it:
 - **No `opcache.preload_user` needed.** That directive is only required when the FPM master runs as root; LaraOCI runs as `laravel` throughout.
 - Application code is deliberately *not* in the default path set. Preloading app classes is a real optimisation but is application-specific; consumers point `LARAOCI_PRELOAD_PATHS` at `app` themselves.
 - **`vendor/symfony` is deliberately excluded from the default**, reversing the v1 draft. Illuminate's own preloading drags in the Symfony components it actually uses; compiling the full tree additionally loads Console, Mailer, and HttpKernel subtrees that most applications never touch, inflating preload memory for no hit-rate gain. It is also the largest source of benign "unlinked class" skips, which makes the startup line misleading. Documented as an opt-in append.
+- **`/Console/` is in the default ignore set (D33), as the consequence of the exclusion above.** Without the Symfony tree, `Illuminate\Console\Command` cannot link its parent, and the ~78 artisan commands extending it fail behind it - so the default was compiling 130 classes that provably could not be preloaded, and saying so 176 times at every start. Measured on a Laravel 13 tree (2026-07-31): the entry removes 131 of those 176 warnings and 2.35 MB of preload memory, and costs 80 genuinely-preloaded classes that are on no hot path - `fpm` never touches console code in a request, and `queue` loads it once at worker start and then runs for up to `--max-time=3600`. Adding `vendor/symfony` back instead was measured and rejected: 153 warnings for +12.5 MB. Consumers with artisan-heavy workloads restate the list without the entry.
+- **About 45 "unlinked class" warnings remain and are expected output.** Their parents live in `Symfony\…`, `Psr\…`, `Monolog\…` and `GuzzleHttp\…`, all outside the path set by design. Reaching zero would mean preloading those trees at a memory cost the default declines. The documentation says so, so that an operator reads them as normal rather than as a fault.
 - Tuning is measurable: `opcache_get_status()['preload_statistics']` reports the memory consumed and the class/function counts. The docs show this rather than asserting a number.
 
 ---

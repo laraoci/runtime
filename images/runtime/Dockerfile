@@ -227,7 +227,7 @@ ENV PHP_MEMORY_LIMIT=256M \
     MAGICK_TMPDIR=/tmp \
     LARAOCI_PRELOAD_ROOT=/var/www/html \
     LARAOCI_PRELOAD_PATHS=vendor/laravel/framework/src/Illuminate,vendor/composer \
-    LARAOCI_PRELOAD_IGNORE=/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/
+    LARAOCI_PRELOAD_IGNORE=/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/
 
 # 🧭 1 (M2). The single source of truth for what a dash-first argument means on
 # this image. laraoci-entrypoint reads it TWICE over - for the binary it

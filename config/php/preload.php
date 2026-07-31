@@ -31,6 +31,22 @@
  *     components it uses, the rest inflates preload memory for no hit-rate gain,
  *     and it is the largest source of benign "unlinked class" skips - which
  *     makes the startup line misleading.
+ *   - /Console/ is IN the default ignore set (D33), and it is the consequence of
+ *     the line above rather than an independent choice. With vendor/symfony
+ *     excluded, Illuminate\Console\Command cannot link its Symfony parent, and 78
+ *     command subclasses fail behind it. Measured on the fixture's Laravel 13
+ *     tree, 2026-07-31:
+ *
+ *       default            1534 compiled, 176 warnings, 21.9 MB
+ *       + /Console/        1325 compiled,  45 warnings, 19.5 MB
+ *
+ *     Of the 224 named classes that drop out, 130 could not link in the first
+ *     place; the 80 real losses are all under \Console\, and console commands are
+ *     on no hot path - `fpm` never touches them in a request, and `queue` boots
+ *     them once per container and then runs for up to --max-time=3600. A
+ *     consumer whose workload IS artisan-heavy restates the list without this
+ *     entry. Adding vendor/symfony back instead was measured and rejected: 153
+ *     warnings for +12.5 MB.
  *   - Application code is deliberately out too. Consumers who want it point
  *     LARAOCI_PRELOAD_PATHS at their own `app` directory - the variable REPLACES
  *     the list, so an append means restating the defaults.
@@ -84,7 +100,7 @@ $root = getenv('LARAOCI_PRELOAD_ROOT') ?: '/var/www/html';
 $paths = getenv('LARAOCI_PRELOAD_PATHS')
     ?: 'vendor/laravel/framework/src/Illuminate,vendor/composer';
 $ignore = getenv('LARAOCI_PRELOAD_IGNORE')
-    ?: '/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/';
+    ?: '/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/';
 
 $ignores = array_filter(explode(',', $ignore));
 $compiled = $skipped = 0;

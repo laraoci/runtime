@@ -92,19 +92,40 @@ services:
 | `LARAOCI_PRELOAD_FORCE`    | *(unset; `1` on `queue`)*                                 |
 | `LARAOCI_PRELOAD_ROOT`     | `/var/www/html`                                           |
 | `LARAOCI_PRELOAD_PATHS`    | `vendor/laravel/framework/src/Illuminate,vendor/composer` |
-| `LARAOCI_PRELOAD_IGNORE`   | `/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/` |
+| `LARAOCI_PRELOAD_IGNORE`   | `/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/` |
 
-**`LARAOCI_PRELOAD_PATHS` replaces the list; it does not append.** To preload
-your own classes as well, restate the defaults:
+**Both list variables replace the list; neither appends.** To preload your own
+classes as well, restate the defaults:
 
 ```bash
 LARAOCI_PRELOAD_PATHS=vendor/laravel/framework/src/Illuminate,vendor/composer,app
 ```
 
 `vendor/symfony` is deliberately absent from the default. Illuminate already
-pulls in the Symfony components it uses; compiling the whole tree adds Console,
-Mailer and HttpKernel subtrees most applications never touch, and produces most
-of the benign "unlinked class" skips that make the startup count misleading.
+pulls in the Symfony components it uses; compiling the whole tree adds Mailer and
+HttpKernel subtrees most applications never touch, for no hit-rate gain.
+
+**`/Console/` is ignored by default, and that follows from the line above.**
+Without the Symfony tree, `Illuminate\Console\Command` cannot resolve its parent
+class, so it and the ~78 artisan commands extending it cannot be preloaded - they
+only produce warnings. Console code is on no hot path either: `fpm` never touches
+it while serving a request, and `queue` loads it once at worker start. Measured
+on a Laravel 13 tree, ignoring it removes 131 of 176 startup warnings and 2.4 MB
+of preload memory, and costs 80 preloaded classes that were doing nothing.
+
+If your workload really is artisan-heavy and you want them back, restate the list
+without that last entry:
+
+```bash
+LARAOCI_PRELOAD_IGNORE=/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/
+```
+
+**You will still see about 45 `Can't preload unlinked class` warnings** at start
+on a typical Laravel application, naming parents in `Symfony\…`, `Psr\…`,
+`Monolog\…` and `GuzzleHttp\…`. That is **expected output, not a fault**: those
+packages are outside the preload path set by design, so classes extending them
+are compiled but not preloaded. Silencing them entirely would mean preloading
+those trees too, at a memory cost the default deliberately declines.
 
 **Four things to know before you turn it on:**
 
