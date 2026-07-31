@@ -48,7 +48,7 @@ size_budgets:
   # run `--report` and always exit 0; the enforcing form (no --report, exit 1 on
   # overrun) is wired into the release path in M4 per spec §9.2.
   #
-  # The four below are MEASURED, not guesses. One formula for all of them, so
+  # The five below are MEASURED, not guesses. One formula for all of them, so
   # the numbers stay comparable across milestones:
   #
   #   ceil(max(8.3, 8.4, 8.5) x 1.10 / 5) x 5
@@ -63,28 +63,38 @@ size_budgets:
   #   cli      2026-07-28  linux/amd64  227.55   230.53   232.62    260
   #   fpm      2026-07-28  linux/amd64  228.02   230.99   233.08    260
   #   builder  2026-07-28  linux/amd64  294.03   297.00   299.11    330
+  #   queue    2026-07-31  linux/amd64  227.58   230.55   232.66    260
   #
   # runtime's three numbers and the Ghostscript/-extra deltas behind them are in
   # docs/size-report-m1.md; the other nine, and what each image adds over its
   # parent, are in docs/size-report-m2.md.
   #
-  # cli AND fpm LANDING ON runtime's OWN 260 IS THE CORRECT OUTCOME, not a
+  # cli, fpm AND queue LANDING ON runtime's OWN 260 IS THE CORRECT OUTCOME, not a
   # copy-paste error. cli adds ENV and CMD - zero bytes, and its measurements
   # differ from runtime's only in the third significant figure. fpm adds
   # libfcgi-bin, libfcgi0t64 and one rendered pool file, together about 0.5 MB
-  # compressed. Both are far inside the rounding step, so all three round
-  # identically. The placeholders these replaced (225 and 235) were below the
-  # parent they descend from, which is impossible by construction.
+  # compressed. queue adds one ENV and one CMD over cli and measures IDENTICALLY
+  # to it - 227.58/230.55/232.66 against cli's 227.58/230.56/232.66 on the same
+  # day, where the one-hundredth-MB disagreement on 8.4 is gzip noise, not
+  # content. All are far inside the rounding step, so they round identically. The
+  # placeholders these replaced (225 and 235) were below the parent they descend
+  # from, which is impossible by construction.
+  #
+  # cli's row above is M2's frozen measurement and is deliberately NOT rewritten.
+  # Re-measured on 2026-07-31 it reads 0.03-0.04 MB higher, because D30 added the
+  # preload script to `runtime` and every descendant carries it. That is three
+  # orders of magnitude inside the 5 MB rounding step and moves no budget; the
+  # M3 size report carries the re-measurement rather than this file.
   runtime: 260
   cli: 260
   fpm: 260
   builder: 330
+  queue: 260
   #
-  # queue and scheduler are still PLACEHOLDERS - M3 builds and freezes them the
-  # same way. Neither can legitimately be lower than `cli`, which they descend
-  # from, so these numbers are known to be wrong and will fail the moment those
-  # images are built. That is deliberate: a red build is the reminder.
-  queue: 225
+  # scheduler is still a PLACEHOLDER - LOCI-033 builds and freezes it the same
+  # way. It cannot legitimately be lower than `cli`, which it descends from, so
+  # this number is known to be wrong and fails the moment that image is built.
+  # That is deliberate: a red build is the reminder.
   scheduler: 225
 
 images:
