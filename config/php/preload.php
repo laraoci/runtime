@@ -116,28 +116,53 @@ foreach (array_filter(explode(',', $paths)) as $relative) {
         continue;
     }
 
-    $files = new RegexIterator(
-        new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS)
-        ),
-        '/\.php$/'
-    );
+    // WRAPPED, AND WITH CATCH_GET_CHILD, because the iterator throws from
+    // OUTSIDE the try/catch below. RecursiveDirectoryIterator raises
+    // UnexpectedValueException when it cannot open a directory - from
+    // rewind()/next() for a subdirectory, and from the CONSTRUCTOR for the root
+    // path, which is before any iteration and which CATCH_GET_CHILD cannot see.
+    // is_dir() above does not help: it returns true for a directory that cannot
+    // be opened.
+    //
+    // Uncaught, that ABORTS PHP STARTUP (D32): measured on 8.3/8.4/8.5, a CLI
+    // worker exits 255 and the FPM master never reaches "ready to handle
+    // connections". A bind-mounted application tree carries the host's ownership
+    // and modes, so any vendor/ subtree the laravel user cannot traverse turned a
+    // preload opt-in into a container that would not boot - on exactly the
+    // deployments §7.7's empty-root no-op exists to protect.
+    //
+    // CATCH_GET_CHILD skips the unreadable SUBTREE and continues the walk, so a
+    // readable sibling is still compiled; the outer catch handles the root case,
+    // where there is nothing to continue and the path is simply skipped. Both,
+    // because either alone leaves half the hole open.
+    try {
+        $files = new RegexIterator(
+            new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::LEAVES_ONLY,
+                RecursiveIteratorIterator::CATCH_GET_CHILD
+            ),
+            '/\.php$/'
+        );
 
-    foreach ($files as $file) {
-        $path = $file->getPathname();
+        foreach ($files as $file) {
+            $path = $file->getPathname();
 
-        foreach ($ignores as $needle) {
-            if (str_contains($path, $needle)) {
+            foreach ($ignores as $needle) {
+                if (str_contains($path, $needle)) {
+                    $skipped++;
+                    continue 2;
+                }
+            }
+
+            try {
+                opcache_compile_file($path) ? $compiled++ : $skipped++;
+            } catch (Throwable) {
                 $skipped++;
-                continue 2;
             }
         }
-
-        try {
-            opcache_compile_file($path) ? $compiled++ : $skipped++;
-        } catch (Throwable) {
-            $skipped++;
-        }
+    } catch (Throwable) {
+        continue;
     }
 }
 

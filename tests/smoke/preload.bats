@@ -68,6 +68,27 @@ setup_file() {
       printf "<?php\nclass Fine {}\n" > /tmp/preload-root/lib/fine.php
       printf "<?php\nclass Broken {\n" > /tmp/preload-root/lib/broken.php
       php -r "echo \"SURVIVED\n\";"'
+
+  # --- Case D: an UNREADABLE DIRECTORY inside the preload path. ----------------
+  # Case C's sibling, and the more dangerous half. A broken FILE throws inside
+  # opcache_compile_file(), where the try/catch is; an unreadable DIRECTORY throws
+  # from the ITERATOR, which was outside it - so this aborted PHP startup
+  # outright (D32) rather than merely logging badly. A bind-mounted vendor/ tree
+  # carries the host's modes, so this is reachable without anyone doing anything
+  # unusual.
+  #
+  # The readable sibling is asserted as well as the survival: skipping the subtree
+  # it cannot open must not abandon the whole walk.
+  capture unreadable docker run --rm \
+    -e PHP_OPCACHE_PRELOAD="$PRELOAD" \
+    -e LARAOCI_PRELOAD_ROOT=/tmp/preload-root \
+    -e LARAOCI_PRELOAD_PATHS=lib \
+    "$(image_ref queue)" sh -c '
+      mkdir -p /tmp/preload-root/lib/sub
+      printf "<?php\nclass Fine {}\n" > /tmp/preload-root/lib/fine.php
+      printf "<?php\nclass Hidden {}\n" > /tmp/preload-root/lib/sub/hidden.php
+      chmod 000 /tmp/preload-root/lib/sub
+      php -r "echo \"SURVIVED\n\";"'
 }
 
 @test "preload: the entrypoint enables it on a long-lived worker (D29, D22)" {
@@ -190,4 +211,26 @@ setup_file() {
   [[ "$out" != *"Fatal error"* ]]
   [ -n "$skipped" ]
   ((skipped >= 1))
+}
+
+@test "preload: an unreadable directory is skipped, not fatal (finding 2)" {
+  assert_step_ok unreadable
+
+  local out compiled
+  out="$(step_output unreadable)"
+  compiled="$(sed -n 's/.*laraoci: preloaded \([0-9]*\) files.*/\1/p' <<<"$out" | head -1)"
+
+  if [[ "$out" != *"SURVIVED"* ]]; then
+    echo "an unreadable directory in the preload path aborted the run:" >&2
+    echo "$out" >&2
+  fi
+  # SURVIVED is the load-bearing word, exactly as in case C: an uncaught error
+  # during preload aborts PHP startup (D32), and on fpm that is a master that
+  # never serves a request.
+  [[ "$out" == *"SURVIVED"* ]]
+  [[ "$out" != *"Fatal error"* ]]
+  [[ "$out" != *"UnexpectedValueException"* ]]
+  # The readable sibling still compiled - the unreadable subtree was skipped, not
+  # the whole path.
+  [ "$compiled" = "1" ]
 }
