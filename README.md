@@ -5,11 +5,11 @@ shared runtime layer, and a maintained security posture. You bring `vendor/` and
 your code; LaraOCI brings a correct PHP runtime, signal handling, logging, and
 weekly rebuilds.
 
-> **Status:** pre-release. M0 (foundations), M1 (the shared `runtime` layer) and
-> M2 (`cli`, `fpm`, `builder`) are complete; `queue` and `scheduler` arrive in
-> M3, and publishing, signing and scanning in M4. **Nothing is published yet** -
-> the image references below are what M4 will push; until then images are built
-> locally with `bin/build-chain.sh`. See `docs/laraoci-Spec.md`.
+> **Status:** pre-release. M0 (foundations), M1 (the shared `runtime` layer),
+> M2 (`cli`, `fpm`, `builder`) and M3 (`queue`, `scheduler`, opcache preload) are
+> complete; publishing, signing and scanning arrive in M4. **Nothing is published
+> yet** - the image references below are what M4 will push; until then images are
+> built locally with `bin/build-chain.sh`. See `docs/laraoci-Spec.md`.
 
 ## Image catalog
 
@@ -19,8 +19,8 @@ weekly rebuilds.
 | `cli`       | `runtime`            | Artisan commands, migrations, one-off tasks                     |
 | `fpm`       | `runtime`            | PHP-FPM behind Nginx/Caddy/Traefik                              |
 | `builder`   | `runtime`            | Composer + Node build toolchain (not for production runtime)    |
-| `queue`     | `cli`                | Laravel queue worker                                            |
-| `scheduler` | `cli`                | Laravel scheduler                                               |
+| `queue`     | `cli`                | Laravel queue worker - [drains on SIGTERM](#queue---graceful-shutdown-and-the-one-setting-you-must-change), raise your grace period |
+| `scheduler` | `cli`                | Laravel scheduler - [run exactly one replica](#scheduler---run-exactly-one-replica) |
 
 ## Configuration
 
@@ -144,7 +144,7 @@ those trees too, at a memory cost the default deliberately declines.
 
    ```
    laraoci: preload enabled: /usr/local/share/laraoci/preload.php
-   [31-Jul-2026 08:32:06 UTC] laraoci: preloaded 2814 files, skipped 91
+   [31-Jul-2026 10:52:49 UTC] laraoci: preloaded 1325 files, skipped 362
    ```
 
    Both lines go to stderr. The first is the entrypoint's; the second is the
@@ -266,6 +266,124 @@ from the upstream PHP image (`make`, `gcc`, `g++`) is present but is not
 sufficient on its own. Packages shipping prebuilt binaries are unaffected, which
 covers the ordinary Laravel front-end stack. If you need `node-gyp`, add
 `apt-get install -y python3` to your own build stage.
+
+### `queue` - graceful shutdown, and the one setting you must change
+
+The image ships:
+
+```
+CMD ["php","artisan","queue:work","--no-interaction","--tries=3","--max-time=3600","--rest=0.1"]
+```
+
+| Flag              | Why                                                                        |
+|-------------------|----------------------------------------------------------------------------|
+| `--tries=3`       | A poison job reaches `failed_jobs` instead of looping forever              |
+| `--max-time=3600` | Bounds worker lifetime so leaks and stale state never accumulate           |
+| `--rest=0.1`      | Yields the CPU for 100 ms between jobs                                     |
+| `--no-interaction`| A prompt in a container is a hung worker                                   |
+
+`queue:work` traps `SIGTERM` through `pcntl` and finishes the job in hand before
+exiting. The image carries `STOPSIGNAL SIGTERM`, `pcntl`/`posix` are compiled in,
+and `tini` is PID 1 forwarding the signal - so `docker stop` **drains** rather
+than truncates.
+
+> **⚠️ Your orchestrator's grace period must exceed your job timeout.**
+> Laravel's default job timeout is **60 s**. Docker's default stop grace is
+> **10 s**. Against those defaults every rolling deploy kills in-flight jobs
+> after ten seconds, no matter how correct this image is. **The image cannot fix
+> this** - it does not know how long your jobs run.
+
+```bash
+docker stop --timeout 120 my-worker
+```
+
+```yaml
+# compose
+services:
+  queue:
+    image: ghcr.io/laraoci/queue:8.4-trixie
+    stop_grace_period: 120s
+```
+
+```yaml
+# kubernetes
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 120
+```
+
+Pick a number above your longest job's timeout, and raise both together if you
+change either. `--timeout` is deliberately not set on the shipped `CMD`, so
+Laravel's 60 s default applies until you set one.
+
+**What getting it wrong looks like.** A 20 s job against a 2 s grace, which is the
+same shape as a 60 s job against Docker's 10 s default:
+
+```
+$ docker stop --timeout 2 worker      # returns after 2.4s
+$ docker inspect worker --format '{{.State.ExitCode}}'
+137                                    # 128+9 = SIGKILL
+```
+
+The job wrote its start marker and never its end. Exit **137** on a worker is the
+signature of this specific mistake - the grace period expiring on a container that
+was still working. A drained worker exits **0**, and `docker stop` returns in the
+job's remaining time rather than at the ceiling.
+
+**No `HEALTHCHECK`, deliberately.** A queue worker has no meaningful synchronous
+health signal, and a naive check is worse than none - it reports healthy while the
+queue backs up behind a wedged worker. Monitor the queue instead:
+
+```bash
+php artisan queue:monitor default:100     # on a schedule
+```
+
+or run Horizon, which is built for it.
+
+### `scheduler` - run exactly one replica
+
+The image ships `CMD ["php","artisan","schedule:work","--no-interaction"]`: one
+foreground process that stays alive, dispatches your due tasks on each minute
+boundary, and logs to stdout like every other container. No cron daemon, no log
+files, no process tree to reap.
+
+> **⚠️ Exactly one replica.** Two scheduler containers fire every task twice.
+> There is no image-level guard against this and there cannot be - an image
+> cannot know how many copies of itself are running.
+
+```yaml
+# compose
+services:
+  scheduler:
+    image: ghcr.io/laraoci/scheduler:8.4-trixie
+    deploy:
+      replicas: 1
+```
+
+```yaml
+# kubernetes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate    # never two schedulers overlapping during a rollout
+```
+
+`Recreate` matters as much as `replicas: 1`: the default `RollingUpdate` starts
+the new pod before terminating the old one, so a rollout briefly runs two
+schedulers - and a task due in that window fires twice.
+
+**If you need the scheduler to survive a node failure**, that is *application*
+configuration, not image configuration. Give the tasks `withoutOverlapping()` and
+point the cache at a **shared** store (Redis, database) so the lock is visible to
+every replica:
+
+```php
+Schedule::command('reports:build')->hourly()->withoutOverlapping();
+```
+
+With the default per-container cache store each scheduler takes its own local
+lock and the guard does nothing.
 
 ## Repository layout
 
