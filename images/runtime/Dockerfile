@@ -179,6 +179,18 @@ RUN --mount=type=bind,source=config/imagemagick/policy.xml,target=/tmp/policy.xm
 COPY --chmod=0644 config/php/zz-laraoci.ini.template /usr/local/share/laraoci/templates/
 COPY --chmod=0755 bin/entrypoint.sh /usr/local/bin/laraoci-entrypoint
 
+# D30. The preload script belongs to RUNTIME - §7.1 lists it among what runtime
+# installs - so every image carries it INERT and only queue, via
+# LARAOCI_PRELOAD_FORCE=1, and fpm, via the D22 SAPI gate, ever activate it.
+# Copying it into `queue` alone would save ~2 KB on four images, split the
+# preload story across two Dockerfiles, and leave `fpm` - the DEFAULT preload
+# consumer - without the file it is documented to point at.
+#
+# /usr/local/share/laraoci already exists (RUN 2 creates it 0755), so BuildKit
+# creates no parent directory here and the --chmod trap recorded in RUN 2 does
+# not apply.
+COPY --chmod=0644 config/php/preload.php /usr/local/share/laraoci/preload.php
+
 # The §6.4 defaults live here and nowhere else: visible to `docker inspect`,
 # inherited by every descendant, and overridable per container. The entrypoint
 # reads them rather than carrying a second copy of the defaults.
@@ -235,8 +247,20 @@ ENV LARAOCI_DEFAULT_BINARY=php-fpm
 # keeps the instruction pipe-free. Note the two shapes of a falsey boolean ini:
 # expose_php reads back as '' while opcache.validate_timestamps reads back as
 # '0', so both go through FILTER_VALIDATE_BOOLEAN instead of a string compare.
+#
+# `php -l` on the preload script is this repository's PHP quality gate. There is
+# no pint here and no PHP toolchain to hang one on, and adding one for a single
+# file is disproportionate. A parse check that runs on 8.3, 8.4 AND 8.5 at BUILD
+# time - so a syntax error is a red build rather than a container that refuses to
+# start - plus LOCI-038 exercising the script against a real vendor tree on all
+# three versions, is the stronger gate of the two.
+#
+# It matters more here than it looks: an uncaught error in a preload script
+# ABORTS PHP STARTUP (D32), so a typo in that file would take down every
+# container that enables preload, and the FPM master would refuse to start.
 # hadolint ignore=SC2016
 RUN set -eux; \
+    php -l /usr/local/share/laraoci/preload.php; \
     install -o "${USER_UID}" -g "${USER_GID}" -m 0644 /dev/null "${PHP_INI_DIR}/conf.d/zz-laraoci.ini"; \
     install -o "${USER_UID}" -g "${USER_GID}" -m 0644 /dev/null "${PHP_INI_DIR}/conf.d/zz-laraoci-preload.ini"; \
     /usr/local/bin/laraoci-entrypoint true; \

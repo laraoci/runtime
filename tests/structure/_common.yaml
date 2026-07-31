@@ -72,6 +72,14 @@ fileExistenceTests:
   - name: ini template ships under the LaraOCI assets path (§6.1)
     path: /usr/local/share/laraoci/templates/zz-laraoci.ini.template
     shouldExist: true
+  # D30: the script is copied by RUNTIME, not by queue, so every image carries it
+  # inert and `fpm` - the DEFAULT preload consumer under D22 - has it without a
+  # second copy. Asserted here rather than in queue.yaml for exactly that reason:
+  # "true of every image" is what this file is for.
+  - name: preload script ships under the LaraOCI assets path (§7.7, D14)
+    path: /usr/local/share/laraoci/preload.php
+    shouldExist: true
+    permissions: '-rw-r--r--'
   - name: entrypoint is executable
     path: /usr/local/bin/laraoci-entrypoint
     shouldExist: true
@@ -222,6 +230,18 @@ commandTests:
     command: sh
     args: ["-c", "printenv PHP_OPCACHE_PRELOAD"]
     exitCode: 1
+
+  # §7.7. opcache.preload_user is only required when the FPM master runs as root,
+  # and LaraOCI runs as `laravel` throughout. Measured 2026-07-31: the upstream
+  # image as root dies with `"opcache.preload" requires "opcache.preload_user"
+  # when running under uid 0`, and the same image at uid 1000 preloads and
+  # reaches "ready to handle connections". Asserted ABSENT rather than left
+  # unmentioned, because adding it is the plausible wrong fix for a preload
+  # permission error and PHP would accept it silently.
+  - name: opcache.preload_user is not set (§7.7)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["php", "-r", "echo ini_get('opcache.preload_user') === '' ? 'ABSENT' : 'SET';"]
+    expectedOutput: ['^ABSENT$']
 
   - name: rendered ini - expose_php is Off (§6.5)
     command: /usr/local/bin/laraoci-entrypoint
