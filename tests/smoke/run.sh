@@ -147,8 +147,33 @@ echo "smoke: PHP $php ($debian), project $project, http://127.0.0.1:$port"
 compose down --volumes --remove-orphans --timeout 10 >/dev/null 2>&1 || true
 
 echo "smoke: building images"
-for image in cli fpm builder; do
+# EVERY laraoci image compose.yml can resolve, not just the M2 three. queue and
+# scheduler are declared there with `image:` and no `build:` key, so a missing tag
+# is not a build error - compose PULLS it, and nothing is published until M4
+# (D27). The leg then dies on "manifest unknown", which reads like a registry
+# outage; it passed on the machine where the M3 images had been built by hand.
+#
+# ONE LINE, ONE ARRAY: tests/unit/smoke-harness.bats parses this declaration and
+# fails if compose.yml resolves an image that is missing from it, so a service
+# added there without a build here goes red in the unit suite rather than four
+# minutes into a smoke leg.
+smoke_images=(cli fpm builder queue scheduler)
+for image in "${smoke_images[@]}"; do
   bin/build-chain.sh --image "$image" --php "$php"
+done
+
+# THE TAG THE SUITES WILL USE IS THE TAG THIS RUN BUILT. bin/structure-test.sh:130
+# asserts the same thing for the same reason: compose resolves a tag it cannot
+# find by pulling, so a registry/debian override that made build-chain.sh produce
+# a DIFFERENT reference would surface as a pull error inside a .bats file instead
+# of here, next to the build that was supposed to produce it.
+for image in "${smoke_images[@]}"; do
+  ref="$registry/$image:$php-$debian"
+  if ! docker image inspect "$ref" >/dev/null 2>&1; then
+    echo "error: $ref is not in the local daemon after bin/build-chain.sh" >&2
+    echo "       the smoke suites resolve images by tag and would PULL this one" >&2
+    exit 1
+  fi
 done
 
 echo "smoke: seeding the app volume from tests/fixtures/app"
