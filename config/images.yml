@@ -48,8 +48,8 @@ size_budgets:
   # run `--report` and always exit 0; the enforcing form (no --report, exit 1 on
   # overrun) is wired into the release path in M4 per spec §9.2.
   #
-  # The five below are MEASURED, not guesses. One formula for all of them, so
-  # the numbers stay comparable across milestones:
+  # ALL SIX are MEASURED, not guesses - no placeholder survives. One formula for
+  # all of them, so the numbers stay comparable across milestones:
   #
   #   ceil(max(8.3, 8.4, 8.5) x 1.10 / 5) x 5
   #
@@ -58,27 +58,35 @@ size_budgets:
   # D17. Size grows monotonically with the PHP minor on every image measured so
   # far, so 8.5 sets each budget and a future 8.6 should be expected to raise it.
   #
-  #   image    date        arch          8.3      8.4      8.5   -> budget
-  #   runtime  2026-07-27  linux/amd64  227.6    230.5    232.6     260
-  #   cli      2026-07-28  linux/amd64  227.55   230.53   232.62    260
-  #   fpm      2026-07-28  linux/amd64  228.02   230.99   233.08    260
-  #   builder  2026-07-28  linux/amd64  294.03   297.00   299.11    330
-  #   queue    2026-07-31  linux/amd64  227.58   230.55   232.66    260
+  #   image     date        arch          8.3      8.4      8.5   -> budget
+  #   runtime   2026-07-27  linux/amd64  227.6    230.5    232.6     260
+  #   cli       2026-07-28  linux/amd64  227.55   230.53   232.62    260
+  #   fpm       2026-07-28  linux/amd64  228.02   230.99   233.08    260
+  #   builder   2026-07-28  linux/amd64  294.03   297.00   299.11    330
+  #   queue     2026-07-31  linux/amd64  227.58   230.55   232.66    260
+  #   scheduler 2026-07-31  linux/amd64  227.57   230.55   232.66    260
   #
   # runtime's three numbers and the Ghostscript/-extra deltas behind them are in
-  # docs/size-report-m1.md; the other nine, and what each image adds over its
-  # parent, are in docs/size-report-m2.md.
+  # docs/size-report-m1.md; cli's, fpm's and builder's nine, and what each image
+  # adds over its parent, are in docs/size-report-m2.md. The six above them -
+  # queue's and scheduler's - belong to the M3 report.
   #
-  # cli, fpm AND queue LANDING ON runtime's OWN 260 IS THE CORRECT OUTCOME, not a
+  # FIVE OF THE SIX LANDING ON runtime's OWN 260 IS THE CORRECT OUTCOME, not a
   # copy-paste error. cli adds ENV and CMD - zero bytes, and its measurements
   # differ from runtime's only in the third significant figure. fpm adds
   # libfcgi-bin, libfcgi0t64 and one rendered pool file, together about 0.5 MB
-  # compressed. queue adds one ENV and one CMD over cli and measures IDENTICALLY
-  # to it - 227.58/230.55/232.66 against cli's 227.58/230.56/232.66 on the same
-  # day, where the one-hundredth-MB disagreement on 8.4 is gzip noise, not
-  # content. All are far inside the rounding step, so they round identically. The
-  # placeholders these replaced (225 and 235) were below the parent they descend
-  # from, which is impossible by construction.
+  # compressed. queue adds one ENV and one CMD over cli, and scheduler adds a CMD
+  # alone; both measure IDENTICALLY to cli on the same day -
+  #
+  #   cli        227.58   230.56   232.66
+  #   queue      227.58   230.55   232.66
+  #   scheduler  227.57   230.55   232.66
+  #
+  # - where the one-hundredth-MB disagreements are gzip noise, not content. All
+  # are far inside the rounding step, so they round identically. The placeholders
+  # these replaced (225 and 235) were below the parent they descend from, which
+  # is impossible by construction; that impossibility is what made them fail
+  # loudly the moment each image was first built, exactly as intended.
   #
   # cli's row above is M2's frozen measurement and is deliberately NOT rewritten.
   # Re-measured on 2026-07-31 it reads 0.03-0.04 MB higher, because D30 added the
@@ -90,12 +98,7 @@ size_budgets:
   fpm: 260
   builder: 330
   queue: 260
-  #
-  # scheduler is still a PLACEHOLDER - LOCI-033 builds and freezes it the same
-  # way. It cannot legitimately be lower than `cli`, which it descends from, so
-  # this number is known to be wrong and fails the moment that image is built.
-  # That is deliberate: a red build is the reminder.
-  scheduler: 225
+  scheduler: 260
 
 images:
   # `parent` defines build order; CI topologically sorts (no hand-maintained

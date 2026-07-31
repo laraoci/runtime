@@ -1,0 +1,60 @@
+schemaVersion: '2.0.0'
+
+# What `scheduler` adds to the inherited contract. The shared part of §6 - user,
+# workdir, entrypoint, extensions, pcntl/posix, the preload script's presence,
+# Ghostscript's absence - is asserted by tests/structure/_common.yaml, which
+# bin/structure-test.sh runs alongside this file on this image's own leg.
+#
+# WHAT THIS FILE CANNOT ASSERT, and must not pretend to: `scheduler` is only
+# correct when EXACTLY ONE replica runs. Two containers double-fire every task.
+# No HEALTHCHECK and no image-level guard can prevent that, because an image
+# cannot know how many copies of itself exist. LOCI-037 asserts what the image
+# CAN guarantee - one scheduler fires a per-minute task once in a window - and
+# LOCI-039 documents what it cannot. Do not invent a guard here.
+#
+# STOPSIGNAL is inherited SIGTERM and asserted by .github/workflows/build.yml
+# against images.scheduler.stopsignal in config/images.yml (absent = SIGTERM);
+# container-structure-test has no field for it.
+
+metadataTest:
+  # §7.6 / D10: schedule:work, NOT cron. One foreground process, logs to stdout,
+  # container-native. --no-interaction because a prompt in a container hangs.
+  cmd: ["php", "artisan", "schedule:work", "--no-interaction"]
+  envVars:
+    - key: LARAOCI_DEFAULT_BINARY
+      value: php
+    - key: PHP_MEMORY_LIMIT
+      value: 512M
+    - key: PHP_MAX_EXECUTION_TIME
+      value: "0"
+
+fileExistenceTests:
+  - name: Composer is absent (D6)
+    path: /usr/local/bin/composer
+    shouldExist: false
+
+commandTests:
+  # 🧭 1 / D29, from the other side. The force flag is `queue`'s and ONLY
+  # queue's: a scheduler spends its life sleeping between minute boundaries and
+  # forks `schedule:run` as a SHORT-LIVED child, so a preload segment built in
+  # the parent buys the child nothing and would be paid for on every start.
+  # Asserted rather than assumed, because "copy the queue Dockerfile and change
+  # the CMD" is the obvious way to write this image and would silently ship it.
+  - name: the queue-only preload force flag is NOT set here (🧭 1)
+    command: sh
+    args: ["-c", "printenv LARAOCI_PRELOAD_FORCE"]
+    exitCode: 1
+
+  # Belt and braces on the above: with a script named and no force flag, the
+  # entrypoint must classify `php` as non-FPM and leave the directive file empty.
+  - name: a named preload script stays inert on scheduler (D22)
+    command: sh
+    args:
+      - -c
+      - |
+        /usr/local/bin/laraoci-entrypoint true >/dev/null 2>&1
+        wc -c < /usr/local/etc/php/conf.d/zz-laraoci-preload.ini
+    envVars:
+      - key: PHP_OPCACHE_PRELOAD
+        value: /usr/local/share/laraoci/preload.php
+    expectedOutput: ['^ *0\n$']
