@@ -1,5 +1,7 @@
 <?php
 
+use App\Jobs\SleepJob;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
 
 /*
@@ -19,3 +21,19 @@ Schedule::call(function () {
         FILE_APPEND | LOCK_EX
     );
 })->everyMinute();
+
+/*
+| LOCI-036's enqueue side. A closure command rather than `tinker --execute`,
+| because laravel/tinker is a dev dependency the fixture deliberately does not
+| carry, and rather than a `php -r` bootstrap in the .bats file, because the
+| queue payload has to be built by the same application the worker will boot.
+|
+| $seconds is cast rather than type-hinted: console arguments arrive as strings
+| and this file has no declare(strict_types=1) to lean on, so an `int` hint would
+| work by coercion today and break the day one is added.
+*/
+Artisan::command('smoke:enqueue {seconds=8}', function ($seconds) {
+    SleepJob::dispatch((int) $seconds);
+
+    $this->info('queued SleepJob('.(int) $seconds.')');
+})->purpose('Queue one SleepJob for the LOCI-036 graceful-shutdown assertion');

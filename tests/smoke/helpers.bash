@@ -106,3 +106,40 @@ dump_app_errors() {
     "grep -o 'ERROR: [^{]*' storage/logs/laravel.log | tail -5" >&2 2>/dev/null ||
     echo "  (no ERROR lines in storage/logs/laravel.log)" >&2
 }
+
+# The fully-qualified reference for one image of the CURRENT leg. Needed by the
+# suites that run a container OUTSIDE the compose stack - LOCI-038's empty-vendor
+# case is precisely "this image with no application volume at all", which cannot
+# be expressed as a compose service because the service exists to mount one.
+#
+# No fallbacks, for the same reason require_smoke_env has none: a default here
+# would silently test some other image on the machine.
+image_ref() {
+  local var
+  for var in LARAOCI_REGISTRY LARAOCI_PHP LARAOCI_DEBIAN; do
+    if [ -z "${!var:-}" ]; then
+      echo "$var is unset - run this through tests/smoke/run.sh, not directly" >&2
+      return 1
+    fi
+  done
+  printf '%s/%s:%s-%s\n' \
+    "$LARAOCI_REGISTRY" "$1" "$LARAOCI_PHP" "$LARAOCI_DEBIAN"
+}
+
+# The queue suite needs the `jobs` table and the scheduler suite needs a bootable
+# application, and NEITHER can rely on request-path.bats having migrated first:
+# run.sh hands bats a glob, so files run in alphabetical order and
+# `queue-shutdown.bats` sorts BEFORE `request-path.bats`. Rather than encode an
+# ordering nobody can see from the filenames - the reasoning ensure_app_installed
+# already applies to vendor/ - each suite asks for what it needs and this is
+# idempotent: `migrate --force` on an up-to-date database is a no-op.
+ensure_app_migrated() {
+  ensure_app_installed || return 1
+
+  local out
+  out="$(compose run --rm cli php artisan migrate --force --no-interaction 2>&1)" || {
+    echo "could not migrate the application - the queue has no jobs table without it:" >&2
+    echo "$out" >&2
+    return 1
+  }
+}

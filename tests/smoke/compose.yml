@@ -129,6 +129,14 @@ services:
       # earns its keep: it writes to storage/framework/sessions on the shared
       # named volume, which proves the laravel user can write into the mount.
       SESSION_DRIVER: file
+      # Laravel's own default today, pinned here because LOCI-036 depends on it:
+      # the fixture ships a `jobs` table migration and no config/queue.php, so a
+      # framework default that changed would silently move the queue to `sync` -
+      # where dispatch() runs the job INLINE, both markers are written by the
+      # dispatching process, and the graceful-shutdown assertion would pass
+      # without a worker ever being involved. cli and queue must agree, since one
+      # enqueues and the other drains.
+      QUEUE_CONNECTION: database
     volumes:
       - app:/var/www/html
 
@@ -192,6 +200,14 @@ services:
       LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
       APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
       SESSION_DRIVER: file
+      # Laravel's own default today, pinned here because LOCI-036 depends on it:
+      # the fixture ships a `jobs` table migration and no config/queue.php, so a
+      # framework default that changed would silently move the queue to `sync` -
+      # where dispatch() runs the job INLINE, both markers are written by the
+      # dispatching process, and the graceful-shutdown assertion would pass
+      # without a worker ever being involved. cli and queue must agree, since one
+      # enqueues and the other drains.
+      QUEUE_CONNECTION: database
     volumes:
       - app:/var/www/html
 
