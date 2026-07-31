@@ -199,8 +199,18 @@ COPY --chmod=0644 config/php/preload.php /usr/local/share/laraoci/preload.php
 # and per 🧭 4 the entrypoint only honours it for FPM.
 # PHP_MEMORY_LIMIT / PHP_MAX_EXECUTION_TIME carry the FPM values; M2's cli image
 # overrides them to 512M / 0 (§6.4).
-# LARAOCI_PRELOAD_* are M3's (LOCI-035) - the preload script does not ship yet,
-# so setting them now would be inert configuration.
+# LARAOCI_PRELOAD_* are the preload script's CONTRACT (§6.4, LOCI-035). They are
+# inert on their own - nothing reads them unless PHP_OPCACHE_PRELOAD names the
+# script AND the D22 gate opens - and they are declared here rather than left to
+# preload.php's own getenv() fallbacks so `docker inspect` answers "what would
+# this preload?" without anyone reading a PHP file.
+#
+# LARAOCI_PRELOAD_PATHS REPLACES the list, it does not append to it. A consumer
+# who wants their own classes preloaded restates the defaults:
+#   LARAOCI_PRELOAD_PATHS=vendor/laravel/framework/src/Illuminate,vendor/composer,app
+# vendor/symfony stays out of the default (§7.7, reversing the v1 draft):
+# Illuminate already drags in the components it uses, the rest is preload memory
+# for no hit-rate gain and the largest source of benign "unlinked class" skips.
 #
 # thread=1 in the ImageMagick policy plus MAGICK_THREAD_LIMIT is a correctness
 # fix as much as a security one: OpenMP pools are per process, so twenty FPM
@@ -214,7 +224,10 @@ ENV PHP_MEMORY_LIMIT=256M \
     PHP_OPCACHE_MEMORY_CONSUMPTION=192 \
     PHP_OPCACHE_MAX_ACCELERATED_FILES=20000 \
     MAGICK_THREAD_LIMIT=1 \
-    MAGICK_TMPDIR=/tmp
+    MAGICK_TMPDIR=/tmp \
+    LARAOCI_PRELOAD_ROOT=/var/www/html \
+    LARAOCI_PRELOAD_PATHS=vendor/laravel/framework/src/Illuminate,vendor/composer \
+    LARAOCI_PRELOAD_IGNORE=/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/
 
 # 🧭 1 (M2). The single source of truth for what a dash-first argument means on
 # this image. laraoci-entrypoint reads it TWICE over - for the binary it

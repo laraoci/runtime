@@ -57,6 +57,92 @@ If the build-time configuration is what you want — a read-only root filesystem
 say — set `LARAOCI_ALLOW_UNWRITABLE_CONFIG=1`. The container then starts and
 logs which file it could not write. Your `PHP_*` overrides will not apply.
 
+### Preload - opt-in opcache preloading
+
+Every image ships a preload script at `/usr/local/share/laraoci/preload.php`. It
+is **inert until you name it**, and naming it is necessary but not sufficient:
+
+```bash
+PHP_OPCACHE_PRELOAD=/usr/local/share/laraoci/preload.php
+PHP_OPCACHE_MEMORY_CONSUMPTION=320
+```
+
+**Preload is FPM-only by default.** The entrypoint writes the `opcache.preload`
+directive only when the process it is about to start is `php-fpm`. opcache in a
+CLI process is per-process - the shared segment is created at startup and
+destroyed at exit - so on `cli` every `php artisan` call would compile the whole
+framework and throw the result away.
+
+**Long-lived CLI workers opt in with `LARAOCI_PRELOAD_FORCE=1`.** `queue` bakes
+that flag, because a queue worker compiles once and then serves thousands of jobs
+from the warm segment. It still does nothing until you name the script:
+
+```yaml
+services:
+  queue:
+    image: ghcr.io/laraoci/queue:8.4-trixie
+    environment:
+      PHP_OPCACHE_PRELOAD: /usr/local/share/laraoci/preload.php
+      PHP_OPCACHE_MEMORY_CONSUMPTION: 320
+```
+
+| Variable                   | Default                                                   |
+|----------------------------|-----------------------------------------------------------|
+| `PHP_OPCACHE_PRELOAD`      | *(unset)*                                                 |
+| `LARAOCI_PRELOAD_FORCE`    | *(unset; `1` on `queue`)*                                 |
+| `LARAOCI_PRELOAD_ROOT`     | `/var/www/html`                                           |
+| `LARAOCI_PRELOAD_PATHS`    | `vendor/laravel/framework/src/Illuminate,vendor/composer` |
+| `LARAOCI_PRELOAD_IGNORE`   | `/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/` |
+
+**`LARAOCI_PRELOAD_PATHS` replaces the list; it does not append.** To preload
+your own classes as well, restate the defaults:
+
+```bash
+LARAOCI_PRELOAD_PATHS=vendor/laravel/framework/src/Illuminate,vendor/composer,app
+```
+
+`vendor/symfony` is deliberately absent from the default. Illuminate already
+pulls in the Symfony components it uses; compiling the whole tree adds Console,
+Mailer and HttpKernel subtrees most applications never touch, and produces most
+of the benign "unlinked class" skips that make the startup count misleading.
+
+**Four things to know before you turn it on:**
+
+1. **It needs `vendor/` at container start.** With an empty root the script
+   no-ops, logs zero and the container starts normally - silent, not fatal, by
+   design. If you bind-mount your application, preload compiles whatever was
+   there *when the container started*.
+2. **It costs opcache memory.** Preloaded entries count against
+   `opcache.memory_consumption`, which is why the pairing above raises it to
+   320 MB. `opcache.max_accelerated_files` (20000 by default) must exceed the
+   preloaded file count, or compilation stops part way and the startup line
+   reports a number lower than reality.
+3. **Changing anything preloaded requires a container restart.** Consistent with
+   `opcache.validate_timestamps = 0`.
+4. **Measure, do not guess.** The startup line tells you it ran:
+
+   ```
+   laraoci: preload enabled: /usr/local/share/laraoci/preload.php
+   [31-Jul-2026 08:32:06 UTC] laraoci: preloaded 2814 files, skipped 91
+   ```
+
+   Both lines go to stderr. The first is the entrypoint's; the second is the
+   script's, carrying the timestamp `error_log = /proc/self/fd/2` adds. If you
+   set `log_errors = Off`, the second line disappears - the preload still runs.
+
+   and `opcache_get_status()` tells you what it cost:
+
+   ```bash
+   docker compose exec queue php -r \
+     'print_r(opcache_get_status()["preload_statistics"]);'
+   ```
+
+   That reports the memory consumed and the class/function/script counts. Tune
+   against those numbers rather than against a target someone else measured.
+
+You do not need `opcache.preload_user`. It is only required when the FPM master
+runs as root, and LaraOCI runs as `laravel` throughout.
+
 ### `fpm` - pool sizing and shutdown
 
 | Variable                          | Default   | Notes                                      |

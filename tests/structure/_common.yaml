@@ -43,6 +43,24 @@ metadataTest:
       value: "192"
     - key: PHP_OPCACHE_MAX_ACCELERATED_FILES
       value: "20000"
+    # §6.4, D14. Declared rather than left to the getenv() fallbacks compiled
+    # into preload.php, for the same reason LARAOCI_DEFAULT_BINARY is declared
+    # rather than left to the entrypoint's: `docker inspect` should answer "what
+    # will this preload?" without anyone reading a PHP file. The script keeps its
+    # own fallbacks, so it still behaves when run outside a LaraOCI image.
+    #
+    # THESE VALUES ARE THE ONES THAT ACTUALLY APPLY. With the ENVs set, the
+    # script's fallbacks are unreachable inside every LaraOCI image, so a drift
+    # between the two would be invisible rather than harmful - and it is THIS
+    # side that §6.4 pins. Asserted against §6.4's literals here; the script's
+    # fallbacks are exercised on their own by LOCI-038's case C, which runs with
+    # LARAOCI_PRELOAD_ROOT and _PATHS overridden.
+    - key: LARAOCI_PRELOAD_ROOT
+      value: /var/www/html
+    - key: LARAOCI_PRELOAD_PATHS
+      value: vendor/laravel/framework/src/Illuminate,vendor/composer
+    - key: LARAOCI_PRELOAD_IGNORE
+      value: /tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/
     - key: MAGICK_THREAD_LIMIT
       value: "1"
     - key: MAGICK_TMPDIR
