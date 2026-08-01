@@ -89,6 +89,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          # config/images.yml decides the matrix, the image identity and the
+          # budgets; the runner's preinstalled yq is a version nothing pinned.
+          # Same reasoning as bin/lib/common.sh, which resolves it through this
+          # fetcher for every script.
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
         # The registry comes from config/images.yml rather than from a literal.
         # It used to be hardcoded, which was harmless while nothing else derived
         # it - but PARENT_REF now does, and a tag and a parent reference that

@@ -287,3 +287,36 @@ pin_for() {
   [[ "$output" == *"present, skipping"* ]]
   rm -rf "$cache"
 }
+
+@test "tools: no build script resolves yq through PATH (L5)" {
+  # yq is pinned in tools.env and was then taken from PATH by every consumer,
+  # which is the defect bin/structure-test.sh:169 already fixed for
+  # container-structure-test - after a comment explaining why PATH resolution is
+  # unacceptable for a tool that decides whether an image passes. yq decides
+  # more: the matrix, the build order, the uid/gid baked into the image, the
+  # registry, the Debian suite, the OCI description and the size budgets.
+  #
+  # The bats suites are deliberately out of scope: they read repository files, so
+  # a divergent yq there is a test error in front of the person running it rather
+  # than a wrongly built image.
+  # MATCHES COMMAND POSITION, not every occurrence of the word. The three shapes
+  # a bare invocation takes in this repository are `yq …` at the start of a
+  # command, `$(yq …)` / `< <(yq …)`, and `NAME=value yq …` - so the pattern is
+  # "a command separator, then any run of env assignments, then yq". Anchoring it
+  # that way is what keeps common.sh's own error messages ("mikefarah/yq v4",
+  # "set YQ=/path/to/yq") and its `fetch-tools.sh --path yq` argument out of the
+  # result: those are prose and an argument, and neither RUNS a yq off PATH.
+  # Verified against the pre-fix revision - it reports all 21 real call sites.
+  local f out bad=0
+  for f in bin/*.sh bin/lib/*.sh tests/smoke/run.sh; do
+    # Strip comments and the quoted "$YQ" form, then look for a bare invocation.
+    out="$(sed -E -e 's/#.*$//' -e 's/"\$YQ"/QQ/g' "$f" |
+      grep -nE '(^|[;&|(!])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*yq[[:space:]]' || true)"
+    if [[ -n "$out" ]]; then
+      echo "$f resolves yq through PATH:" >&2
+      echo "$out" >&2
+      bad=1
+    fi
+  done
+  [ "$bad" -eq 0 ]
+}

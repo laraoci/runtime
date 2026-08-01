@@ -98,7 +98,7 @@ fi
 # a deprecated version is not built at all (§5 schema rules). One field per
 # line, two reads per record - see the comment in bin/matrix.sh for why `@tsv`
 # with IFS=$'\t' silently shifts a row whose optional field is empty.
-default_debian="$(yq -r '.defaults.debian' "$CONFIG")"
+default_debian="$("$YQ" -r '.defaults.debian' "$CONFIG")"
 declare -A php_debian=()
 supported_php=()
 while IFS= read -r v && IFS= read -r d; do
@@ -109,7 +109,7 @@ while IFS= read -r v && IFS= read -r d; do
   else
     php_debian["$v"]="$default_debian"
   fi
-done < <(yq -r '
+done < <("$YQ" -r '
   .php | to_entries | .[]
   | select(.value.status != "deprecated")
   | [.key, (.value.debian // "")]
@@ -133,7 +133,7 @@ fi
 # Dockerfiles' ARG defaults: D8 exists because a UID that silently differs
 # between images is the failure mode, so a config that does not state the
 # identity fails here rather than letting a second source of truth exist.
-mapfile -t defaults < <(yq -r '
+mapfile -t defaults < <("$YQ" -r '
   [.defaults.registry, .defaults.user.name, .defaults.user.uid, .defaults.user.gid] | .[]' "$CONFIG")
 if ((${#defaults[@]} != 4)); then
   echo "error: $CONFIG does not define defaults.registry and defaults.user.{name,uid,gid}" >&2
@@ -159,7 +159,7 @@ declare -A image_description=()
 while IFS= read -r name && IFS= read -r desc; do
   [[ -z "$name" ]] && continue
   image_description["$name"]="$desc"
-done < <(yq -r '
+done < <("$YQ" -r '
   .images | to_entries | .[]
   | [.key, (.value.description // "")]
   | .[]' "$CONFIG")

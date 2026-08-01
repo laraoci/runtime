@@ -36,6 +36,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          # config/images.yml decides the matrix, the image identity and the
+          # budgets; the runner's preinstalled yq is a version nothing pinned.
+          # Same reasoning as bin/lib/common.sh, which resolves it through this
+          # fetcher for every script.
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
       - name: Resolve the supported PHP versions
         id: gen
         run: |

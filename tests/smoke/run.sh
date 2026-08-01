@@ -61,7 +61,7 @@ cd "$REPO_ROOT"
 # its value straight from the command line, and it runs BEFORE anything has
 # validated the value's shape. bin/build-chain.sh applies the same reasoning to
 # --image and --php.
-status="$(PHP="$php" yq -r '.php[strenv(PHP)].status // "absent"' config/images.yml)"
+status="$(PHP="$php" "$YQ" -r '.php[strenv(PHP)].status // "absent"' config/images.yml)"
 case "$status" in
   supported) ;;
   deprecated)
@@ -74,10 +74,10 @@ case "$status" in
     ;;
 esac
 
-registry="$(yq -r '.defaults.registry' config/images.yml)"
+registry="$("$YQ" -r '.defaults.registry' config/images.yml)"
 # The per-version Debian override is the trixie-transition mechanism; honouring
 # it here keeps the smoke tags identical to the ones bin/build-chain.sh produces.
-debian="$(PHP="$php" yq -r '.php[strenv(PHP)].debian // .defaults.debian' config/images.yml)"
+debian="$(PHP="$php" "$YQ" -r '.php[strenv(PHP)].debian // .defaults.debian' config/images.yml)"
 
 # COMPOSE PROJECT NAMES CANNOT CONTAIN A DOT. Compose rejects
 # `laraoci-smoke-8.4` with "must consist only of lowercase alphanumeric
