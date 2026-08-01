@@ -93,7 +93,7 @@ for path in "${changed[@]}"; do
   case "$path" in
     # Documentation and the test inputs that only feed the bats job never
     # rebuild an image.
-    docs/* | tests/unit/* | tests/fixtures/* | tests/probe/* | tests/stub/* | tests/bats/*) : ;;
+    docs/* | tests/unit/* | tests/fixtures/* | tests/probe/* | tests/bats/*) : ;;
     # The shared contract is passed to EVERY image's structure run alongside its
     # own config (bin/structure-test.sh), so editing it must rebuild the whole
     # graph. The fallback below already reaches that answer - "_common" is not
