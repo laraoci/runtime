@@ -209,9 +209,22 @@ fetch_one() {
     exit 2
   fi
 
-  local runner
+  local runner stamp
   runner="$(runner_path "$t")"
-  if [[ -x "$runner" ]]; then
+  # THE VERIFIED HASH OF WHAT IS ACTUALLY ON DISK, not merely "a file exists".
+  # Five of the seven tools have a runner path that does not carry the version
+  # (KIND=binary, or tar: with a bare inner name), so bumping a pin left the OLD
+  # binary in place and this said "present, skipping": SHFMT_VERSION=9.99.9 kept
+  # v3.13.1 with no warning. CI has a cold cache every run, so it took the bump
+  # immediately and a developer machine never did - the local-vs-CI drift
+  # tools.env's header says this file exists to prevent, in the one shape
+  # tests/unit/tools.bats could not see, since it asserts the DECLARATIONS are
+  # well-formed and never that the CACHE matches them.
+  #
+  # Putting the version into the cache path would also work, and would leak a
+  # copy of every superseded version.
+  stamp="$runner.sha256"
+  if [[ -x "$runner" && "$(cat "$stamp" 2>/dev/null)" == "$sha" ]]; then
     echo "fetch-tools: $lc present, skipping" >&2
     return 0
   fi
@@ -237,6 +250,9 @@ fetch_one() {
       fi
       ;;
   esac
+  # Written only after the install succeeded, so a failed extraction cannot leave
+  # a stamp that would make the next run skip a tool that is not there.
+  printf '%s\n' "$sha" >"$stamp"
   echo "fetch-tools: $lc ${ver} ready (sha256 verified)" >&2
 }
 
