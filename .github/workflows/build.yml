@@ -84,6 +84,11 @@ on:
 # place for the decision: the PR path never pushes and needs nothing beyond
 # `contents: read`, and the M4 release caller must grant `packages: write` on
 # its own job for the login/push steps below.
+# M4 adds two more the release caller must grant on its own job:
+# `id-token: write` for cosign's keyless OIDC, and `security-events: write` for
+# the SARIF upload. Both are deliberately absent from pr.yml, which is asserted
+# to request no write permission at all (H2) - so both steps are gated on the
+# push path, and a PR run neither needs nor can obtain them.
 
 jobs:
   build:
@@ -432,6 +437,59 @@ jobs:
             exit 1
           fi
           jq -r '[.. | .buildType? // empty] | .[0]' <<<"$prov"
+
+      - name: Install the pinned trivy
+        if: ${{ inputs.structure_test }}
+        run: |
+          set -euo pipefail
+          # Through the checksum-verifying fetcher, never the marketplace
+          # action - see tools.env's TRIVY block for the March 2026 incident
+          # that decided it, and workflows.bats L5 for the rule that enforces it.
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" trivy
+
+      # SARIF FIRST, GATE SECOND, and the order is the point: the gate exits 1,
+      # and a report that only uploads when the gate passes is a report that is
+      # missing on exactly the runs anyone wants to read.
+      - name: Scan the pushed digest and write SARIF (§11)
+        if: ${{ inputs.push }}
+        env:
+          REF: ${{ steps.ns.outputs.registry }}/${{ inputs.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          trivy image --format sarif --output trivy.sarif \
+            --ignore-unfixed --severity CRITICAL,HIGH --exit-code 0 "$REF"
+
+      - uses: github/codeql-action/upload-sarif@ea14db8afdef5d462e69d78c4ca45002d4522418 # v4.37.4
+        if: ${{ inputs.push }}
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-${{ inputs.image }}-${{ inputs.php }}-${{ inputs.platforms }}
+
+      - name: Vulnerability gate (§9.2 - fixable CRITICAL/HIGH)
+        if: ${{ inputs.push }}
+        env:
+          REF: ${{ steps.ns.outputs.registry }}/${{ inputs.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # --exit-code 1 makes it a gate. --ignore-unfixed keeps it one a
+          # release can actually clear: an unfixable CVE would otherwise block
+          # every release until upstream moved, and a gate that can never be
+          # satisfied is a gate that gets switched off (🧭 3).
+          trivy image --ignore-unfixed --severity CRITICAL,HIGH --exit-code 1 "$REF"
+
+      - name: Vulnerability scan (advisory on PRs, §9.1)
+        if: ${{ !inputs.push && inputs.structure_test }}
+        env:
+          IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          # Advisory: the finding is surfaced, the PR is not blocked. No SARIF
+          # upload here - pr.yml requests no write permission (H2) and must not
+          # start.
+          trivy image --ignore-unfixed --severity CRITICAL,HIGH --exit-code 0 \
+            "$IMAGE_REF" | tee -a "$GITHUB_STEP_SUMMARY"
 
         # Two image-config assertions that container-structure-test cannot make:
         # labels, because CST reads them, but they are applied by THIS workflow

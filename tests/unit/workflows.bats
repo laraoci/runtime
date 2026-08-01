@@ -347,3 +347,32 @@ hadolint_step() {
   [[ "$output" == *"mode=max"* ]]
   [[ "$output" == *"inputs.push"* ]]
 }
+
+@test "workflows: the release scan is a hard gate on FIXABLE criticals (§9.2, 🧭 3)" {
+  # Two halves, both load-bearing. --exit-code 1 is what makes it a gate rather
+  # than a report. --ignore-unfixed is what stops an unfixable upstream CVE
+  # blocking every release forever - the gate is on what someone can act on.
+  run yq -r '.jobs.build.steps[]
+    | select((.run // "") | test("trivy image"))
+    | select((.if // "") | test("inputs\\.push"))
+    | select((.if // "") | test("!inputs\\.push") | not)
+    | .run' .github/workflows/build.yml
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [[ "$output" == *"--exit-code 1"* ]]
+  [[ "$output" == *"--ignore-unfixed"* ]]
+  [[ "$output" == *"CRITICAL,HIGH"* ]]
+}
+
+@test "workflows: the SARIF upload never runs on the PR path (H2)" {
+  # Uploading to code scanning needs security-events: write, and pr.yml is
+  # asserted to request no write permission at all. An ungated upload step
+  # would fail every PR - or, worse, force someone to widen pr.yml's token.
+  local gate
+  gate="$(yq -r '.jobs.build.steps[]
+    | select((.uses // "") | test("codeql-action/upload-sarif"))
+    | .if // "absent"' .github/workflows/build.yml)"
+  [ -n "$gate" ]
+  [[ "$gate" == *"inputs.push"* ]]
+  [[ "$gate" != *"!inputs.push"* ]]
+}
