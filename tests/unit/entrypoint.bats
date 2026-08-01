@@ -398,3 +398,41 @@ TPL
   [[ "$output" == *"IGNORED"* ]]
   [[ "$output" == *"handoff: php -v"* ]]
 }
+
+@test "entrypoint: a template referencing PHP_* without braces is fatal (finding 9)" {
+  # The allowlist is derived from ${VAR} references, so a bare $PHP_MEMORY_LIMIT
+  # is excluded from it - envsubst leaves it alone - AND passes the post-render
+  # check, which looks for '${'. The result is a literal '$PHP_MEMORY_LIMIT' in
+  # php.ini, which PHP accepts as a string and silently misconfigures.
+  #
+  # Caught at the TEMPLATE, not in the rendered output: a bare $VAR SURVIVING is
+  # required behaviour for FPM's built-in $pool (trap 2, asserted above), so the
+  # rendered file cannot distinguish the two. Our own namespace can: a bare
+  # reference to PHP_* or LARAOCI_* is only ever a mistake.
+  cat >"$TMP/templates/zz-laraoci.ini.template" <<'TPL'
+memory_limit = $PHP_MEMORY_LIMIT
+max_execution_time = ${PHP_MAX_EXECUTION_TIME}
+TPL
+  run bin/entrypoint.sh php -v
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"PHP_MEMORY_LIMIT"* ]]
+  [[ "$output" == *"braces"* ]]
+}
+
+@test "entrypoint: a bare \$VAR outside our namespace is still fine (trap 2)" {
+  # The check must not become a ban on the '$' character. $pool is FPM's own and
+  # must reach the pool file verbatim; an unrelated $VAR is none of our business.
+  # Comment lines are exempt so prose may name a variable.
+  cat >"$TMP/templates/zz-laraoci.ini.template" <<'TPL'
+; documents ${PHP_MEMORY_LIMIT} and mentions $PHP_MAX_EXECUTION_TIME in prose
+memory_limit = ${PHP_MEMORY_LIMIT}
+max_execution_time = ${PHP_MAX_EXECUTION_TIME}
+; pool = $pool
+; untouched = $NOT_MINE
+TPL
+  run bin/entrypoint.sh php -v
+  [ "$status" -eq 0 ]
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  [[ "$output" == *'$pool'* ]]
+  [[ "$output" == *'$NOT_MINE'* ]]
+}

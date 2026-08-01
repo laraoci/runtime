@@ -48,6 +48,25 @@ render() {
 
   allowlist="$(grep -o "\${[A-Za-z_][A-Za-z0-9_]*}" "$template" | sort -u | tr '\n' ' ' || true)"
 
+  # A BARE $PHP_… OR $LARAOCI_… IS ALWAYS A MISTAKE. The allowlist above is
+  # derived from ${VAR} references, so an unbraced one is excluded from it -
+  # envsubst leaves it alone - and it also passes the post-render check below,
+  # which looks for '${'. The file would ship a literal '$PHP_MEMORY_LIMIT',
+  # which PHP accepts as a string and silently misconfigures.
+  #
+  # CHECKED HERE AND NOT IN THE RENDERED OUTPUT, because a surviving bare $VAR is
+  # REQUIRED behaviour: FPM's built-in $pool must reach the pool file verbatim
+  # (trap 2). The rendered file cannot tell the two apart; the template can, by
+  # namespace. Comment lines are exempt so prose may name a variable.
+  #
+  # Latent today - both shipped templates use braces exclusively - and cheap to
+  # keep that way.
+  bare="$(sed -e '/^[[:space:]]*[;#]/d' -e 's/\${[A-Za-z_][A-Za-z0-9_]*}//g' "$template" |
+    grep -oE '\$(PHP|LARAOCI)_[A-Za-z0-9_]*' | head -1 || true)"
+  if [ -n "$bare" ]; then
+    die "$(basename "$template") references $bare without braces; envsubst cannot substitute it - write it with braces"
+  fi
+
   # A variable that is unset or empty would render as a blank directive, which
   # PHP accepts and silently misconfigures. Fail instead.
   for ref in $allowlist; do
