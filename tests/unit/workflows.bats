@@ -240,19 +240,13 @@ hadolint_step() {
 }
 
 @test "workflows: every push-gated step in build.yml is recorded in docs/release-verification.md" {
-  # The artifact that gets PUBLISHED is the one artifact never verified: four
-  # steps are gated `!inputs.push`, and build.yml's own comment records that for
-  # the structure tests only. The label set, the STOPSIGNAL check and the size
-  # budget are in the identical position and were not named anywhere.
+  # The artifact that gets PUBLISHED was the one artifact never verified: five
+  # steps are gated `!inputs.push`, and build.yml's own comment recorded that
+  # for the structure tests only. The label set, the STOPSIGNAL check and the
+  # size budget were in the identical position and named nowhere.
   #
-  # STOPSIGNAL is the one that matters most: container-structure-test has no
-  # field for a stop signal, so the assertion that images/fpm restores SIGQUIT -
-  # without which every deploy truncates a response - exists ONLY in this
-  # workflow, and is skipped on exactly the builds that ship.
-  #
-  # Not a bug while nothing pushes (M4, D27). This is what stops it becoming one
-  # silently: a step that starts skipping the push path must be recorded there
-  # with the plan for it, or this goes red.
+  # A step that starts skipping the push path must be recorded there with the
+  # plan for it, or this goes red.
   local names name
   names="$(yq -r '.jobs.build.steps[]
     | select((.if // "") | test("!inputs.push")) | .name' .github/workflows/build.yml)"
@@ -266,6 +260,55 @@ hadolint_step() {
       false
     }
   done <<<"$names"
+}
+
+@test "workflows: every push-path step release-verification.md promises actually exists" {
+  # THE REVERSE DIRECTION, and the one that matters now. The test above cannot
+  # notice a Required row whose push-path twin was never built - which is
+  # exactly the failure this milestone is most likely to produce: a doc that
+  # claims the pushed digest is verified, and a workflow that does not verify
+  # it. Adding a verified step must genuinely SHRINK the unverified set.
+  #
+  # The doc carries the step names in one fenced ```text block; each must exist
+  # in build.yml gated ON the push path, not off it.
+  local names name count
+  names="$(sed -n '/^```text$/,/^```$/p' docs/release-verification.md | sed '1d;$d')"
+  [ -n "$names" ]
+
+  while IFS= read -r name; do
+    [ -z "$name" ] && continue
+    count="$(S="$name" yq -r '[.jobs.build.steps[]
+      | select(.name == strenv(S))
+      | select((.if // "") | test("inputs\\.push"))
+      | select((.if // "") | test("!inputs\\.push") | not)] | length' \
+      .github/workflows/build.yml)"
+    [ "$count" -ge 1 ] || {
+      echo "docs/release-verification.md promises a push-path step named:" >&2
+      echo "  $name" >&2
+      echo "and build.yml has no such step gated on inputs.push" >&2
+      false
+    }
+  done <<<"$names"
+}
+
+@test "workflows: the release path never measures size advisorily (§9.2, D17)" {
+  # --report exits 0 on an overrun. On the release path that is not a report,
+  # it is a budget that does not exist.
+  #
+  # Comments are stripped before the check: the step explains its own lack of
+  # --report in a comment, and a test that reads prose as if it were a command
+  # fails on the documentation of the very thing it is asserting.
+  local body
+  body="$(yq -r '.jobs.build.steps[]
+    | select((.if // "") | test("inputs\\.push"))
+    | select((.if // "") | test("!inputs\\.push") | not)
+    | select((.run // "") | test("size-check.sh"))
+    | .run' .github/workflows/build.yml)"
+  [ -n "$body" ]
+
+  body="$(printf '%s\n' "$body" | grep -v '^[[:space:]]*#' || true)"
+  [[ "$body" == *"size-check.sh"* ]]
+  [[ "$body" != *"--report"* ]]
 }
 
 @test "workflows: CI and the Makefile select Dockerfiles the same way" {

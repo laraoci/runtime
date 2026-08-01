@@ -40,6 +40,29 @@ on:
           from config/images.yml's defaults.runners. Native by construction
           (D3a): an arm64 leg lands on arm64 hardware, never on QEMU. Defaults
           to ubuntu-latest so a caller that predates the field still runs.
+      dated_suffix:
+        required: false
+        type: string
+        default: ""
+        description: >-
+          This release's immutable date suffix, e.g. `-20260801` or
+          `-20260801-2`, computed ONCE by release.yml's prepare job.
+          A child leg appends it to PARENT_REF so it builds against THIS release's
+          runtime rather than against a rolling tag that has not moved yet - the
+          rolling tags are repointed only after the whole matrix (LOCI-046), so
+          on the push path a rolling parent would resolve to the PREVIOUS
+          release. Empty on the PR path, where the parent comes from the local
+          daemon (D27).
+      registry_namespace:
+        required: false
+        type: string
+        default: ""
+        description: >-
+          Overrides config/images.yml's defaults.registry. Exists for the
+          throwaway-namespace dry run that 🚦 Gate 2 inspects, so the full
+          release path can be exercised without writing a single
+          ghcr.io/laraoci/* tag. Empty means "use the config", which is what
+          every real release does.
       structure_test:
         required: false
         type: boolean
@@ -109,6 +132,21 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
 
+      - name: Resolve the registry namespace
+        id: ns
+        env:
+          OVERRIDE: ${{ inputs.registry_namespace }}
+        run: |
+          set -euo pipefail
+          # One resolution, three consumers (the tag, PARENT_REF and the push
+          # target). A namespace that disagreed between them would build the
+          # right thing and publish it under the wrong name.
+          registry="$OVERRIDE"
+          if [ -z "$registry" ]; then
+            registry="$(yq -r '.defaults.registry' config/images.yml)"
+          fi
+          echo "registry=${registry}" >> "$GITHUB_OUTPUT"
+
         # The registry comes from config/images.yml rather than from a literal.
         # It used to be hardcoded, which was harmless while nothing else derived
         # it - but PARENT_REF now does, and a tag and a parent reference that
@@ -120,10 +158,10 @@ jobs:
           IMAGE: ${{ inputs.image }}
           PHP: ${{ inputs.php }}
           DEBIAN: ${{ inputs.debian }}
+          REGISTRY: ${{ steps.ns.outputs.registry }}
         run: |
           set -euo pipefail
-          registry="$(yq -r '.defaults.registry' config/images.yml)"
-          echo "image_ref=${registry}/${IMAGE}:${PHP}-${DEBIAN}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${REGISTRY}/${IMAGE}:${PHP}-${DEBIAN}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve identity from config/images.yml (D8)
         id: identity
@@ -169,9 +207,10 @@ jobs:
           USER_NAME: ${{ steps.identity.outputs.name }}
           USER_UID: ${{ steps.identity.outputs.uid }}
           USER_GID: ${{ steps.identity.outputs.gid }}
+          REGISTRY: ${{ steps.ns.outputs.registry }}
+          DATED_SUFFIX: ${{ inputs.dated_suffix }}
         run: |
           set -euo pipefail
-          registry="$(yq -r '.defaults.registry' config/images.yml)"
           # strenv, not string interpolation: the image name reaches a query, a
           # shell command line and a registry reference, and this is the one
           # form that never lets it be read as syntax.
@@ -184,7 +223,14 @@ jobs:
             echo "USER_UID=${USER_UID}"
             echo "USER_GID=${USER_GID}"
             if [ -n "$parent" ]; then
-              echo "PARENT_REF=${registry}/${parent}:${PHP}-${DEBIAN}"
+              # The suffix is empty on the PR path, where the parent was built
+              # into the daemon by bin/build-chain.sh (D27), and is this
+              # release's immutable dated suffix on the push path. A rolling
+              # parent would be WRONG on the push path: rolling tags do not move
+              # until every leg has passed (LOCI-046), so the rolling
+              # `:<php>-<suite>` tag still points at the PREVIOUS release while
+              # this one is building.
+              echo "PARENT_REF=${REGISTRY}/${parent}:${PHP}-${DEBIAN}${DATED_SUFFIX}"
             else
               echo "BASE_DIGEST=@${BASE_DIGEST}"
             fi
@@ -227,9 +273,22 @@ jobs:
           context: .
           file: ${{ inputs.dockerfile }}
           platforms: ${{ inputs.platforms }}
-          push: ${{ inputs.push }}
+          push: false
           load: ${{ !inputs.push }}
-          tags: ${{ steps.meta.outputs.image_ref }}
+          tags: ${{ inputs.push && '' || steps.meta.outputs.image_ref }}
+          # PUSH BY DIGEST, NOT BY TAG (D3a's consequence). Native arm64 means no
+          # single runner can produce both platforms, so a leg builds ONE
+          # platform on ITS OWN hardware and publishes an untagged digest; a
+          # merge job assembles the manifest list per tag with
+          # `docker buildx imagetools create` once every platform has landed.
+          #
+          # Tagging a per-platform manifest here would publish a single-arch
+          # image under a name consumers read as multi-arch, which is worse than
+          # not publishing it.
+          #
+          # `imagetools create`, not `docker manifest create`: the latter drops
+          # the SBOM and provenance attestations on the floor.
+          outputs: ${{ inputs.push && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', steps.ns.outputs.registry, inputs.image) || '' }}
           build-args: ${{ steps.args.outputs.args }}
           labels: |
             org.opencontainers.image.title=laraoci/${{ inputs.image }}
@@ -261,6 +320,59 @@ jobs:
           cache-from: ${{ inputs.push && 'type=gha' || '' }}
           cache-to: ${{ inputs.push && format('type=gha,mode={0}', inputs.cache_mode) || '' }}
 
+        # docs/release-verification.md, discharged. Every step below runs against
+        # the PUSHED DIGEST. Rebuilding on the load path and inspecting that would
+        # verify a DIFFERENT artifact - same Dockerfile, different bytes, possibly
+        # a different base once M5's weekly rebuild starts moving it.
+      - name: Assert the image metadata against the pushed digest (§11, §6.2)
+        if: ${{ inputs.push }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          REF: ${{ steps.ns.outputs.registry }}/${{ inputs.image }}@${{ steps.build.outputs.digest }}
+          PLATFORM: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          # Reads the config blob from the registry - no pull, and it would
+          # cover every platform of a manifest list if this leg produced one.
+          # This is the ONLY place STOPSIGNAL is asserted anywhere, so it is the
+          # most consequential step in the workflow.
+          bin/assert-metadata.sh --image "$IMAGE" --ref "$REF" \
+          --source registry --platform "$PLATFORM"
+
+      - name: Pull the pushed digest
+        if: ${{ inputs.push }}
+        env:
+          REF: ${{ steps.ns.outputs.registry }}/${{ inputs.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # The structure tests and the size measurement need a local image, and
+          # this is the pull that gives them one. It is native: the leg runs on
+          # the runner matching the platform it built (D3a), so `builder`'s
+          # arm64 tool assertions EXECUTE here rather than being cross-compiled
+          # and never run (trap 2 / finding 12).
+          docker pull "$REF"
+
+      - name: Structure tests against the pushed digest (§10.1)
+        if: ${{ inputs.push && inputs.structure_test }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          REF: ${{ steps.ns.outputs.registry }}/${{ inputs.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          bin/structure-test.sh --image "$IMAGE" --ref "$REF"
+
+      - name: Size budget against the pushed digest (D17, enforcing)
+        if: ${{ inputs.push }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          REF: ${{ steps.ns.outputs.registry }}/${{ inputs.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # NO --report (§9.2, D17): an overrun exits 1 and fails the release.
+          # Same instrument as the frozen budgets - docker save | gzip - on the
+          # digest that was just pulled.
+          bin/size-check.sh --image "$IMAGE" --ref "$REF" | tee -a "$GITHUB_STEP_SUMMARY"
+
         # Two image-config assertions that container-structure-test cannot make:
         # labels, because CST reads them, but they are applied by THIS workflow
         # rather than by the Dockerfile, and the stop signal, because CST's
@@ -279,32 +391,7 @@ jobs:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
           set -euo pipefail
-          labels="$(docker image inspect "$IMAGE_REF" --format '{{json .Config.Labels}}')"
-          for key in source revision created version licenses description documentation base.name base.digest; do
-            jq -e --arg k "org.opencontainers.image.$key" '.[$k] | length > 0' >/dev/null <<<"$labels" \
-              || { echo "missing label org.opencontainers.image.$key" >&2; exit 1; }
-          done
-          jq . <<<"$labels"
-
-          # §6.2 / M2 trap 1. php-fpm reads SIGQUIT as a graceful drain and
-          # SIGTERM as immediate termination, so an fpm image left on the
-          # parent's SIGTERM is killed mid-request on every deploy - a
-          # truncated response, invisible until it happens under load. The
-          # expectation comes from config/images.yml, not from a literal here,
-          # so an image that changes its mind changes one file.
-          #
-          # Absent means SIGTERM: every image inherits runtime's explicit
-          # SIGTERM, and inheritance is real - a child that sets nothing reports
-          # the parent's value, where an image that never set one at all reports
-          # the empty string. So this also catches a runtime that silently lost
-          # its own STOPSIGNAL line.
-          want="$(yq -r '.images[strenv(IMAGE)].stopsignal // "SIGTERM"' config/images.yml)"
-          got="$(docker image inspect "$IMAGE_REF" --format '{{.Config.StopSignal}}')"
-          if [ "$got" != "$want" ]; then
-            echo "::error::${IMAGE} should carry STOPSIGNAL ${want} (config/images.yml) but the built image reports '${got}'"
-            exit 1
-          fi
-          echo "stop signal: ${got}"
+          bin/assert-metadata.sh --image "$IMAGE" --ref "IMAGE_REF" --source daemon
 
       # Both of the steps below need the image present in the local daemon, so
       # they are gated on the build-and-load path. On a push build there is
@@ -344,3 +431,24 @@ jobs:
         run: |
           set -euo pipefail
           bin/size-check.sh --image "$IMAGE" --report | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Export the digest for the merge job
+        if: ${{ inputs.push }}
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # The merge job needs every platform digest for this image x php, and
+          # a reusable workflow called in a matrix has ONE outputs object that
+          # each leg overwrites. An artifact per leg is the only carrier that
+          # survives the fan-in.
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ inputs.push }}
+        with:
+          name: digests-${{ inputs.image }}-${{ inputs.php }}-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
