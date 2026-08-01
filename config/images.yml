@@ -11,6 +11,21 @@ defaults:
   platforms:
     - linux/amd64
     - linux/arm64
+  # NATIVE RUNNER PER BUILD PLATFORM (D3a). A full arm64 PHP-extension build
+  # under QEMU is the cost D3a exists to avoid, so the release matrix puts each
+  # platform on its own hardware and bin/matrix.sh reads the pairing from here.
+  #
+  # A platform absent from this map is a HARD ERROR in bin/matrix.sh rather than
+  # a fallback to ubuntu-latest: the fallback would build the arm64 leg under
+  # emulation and publish it under a name that says otherwise - green, slow, and
+  # wrong in the one way no test downstream can see.
+  #
+  # Pinned to -24.04 on BOTH sides, not -latest: a runner-image rollover that
+  # moved only one architecture would silently split the matrix across two
+  # toolchains mid-release.
+  runners:
+    linux/amd64: ubuntu-24.04
+    linux/arm64: ubuntu-24.04-arm
 
 php:
   # Exactly one version carries `default: true`; it backs :latest.

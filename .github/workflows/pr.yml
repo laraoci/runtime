@@ -95,6 +95,7 @@ jobs:
       cache_mode: max
       dockerfile: ${{ matrix.dockerfile }}
       debian: ${{ matrix.debian }}
+      runner: ${{ matrix.runner }}
       structure_test: true
 
   # A stable, always-present check to gate branch protection on. It succeeds

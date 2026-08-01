@@ -3,6 +3,7 @@ defaults:
   registry: ghcr.io/laraoci
   debian: trixie
   platforms: [linux/amd64]
+  runners: { linux/amd64: ubuntu-24.04 }
   # bin/matrix.sh never reads this, but bin/build-chain.sh refuses to guess an
   # identity (D8): a config that does not state one must fail rather than let
   # the Dockerfiles' ARG defaults become a second source of truth.

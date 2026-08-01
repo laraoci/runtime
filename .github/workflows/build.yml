@@ -31,6 +31,15 @@ on:
         required: true
         type: string
         description: Debian suite for this leg, resolved from config/images.yml by bin/matrix.sh.
+      runner:
+        required: false
+        type: string
+        default: ubuntu-latest
+        description: >-
+          The runner label for this leg, emitted per-platform by bin/matrix.sh
+          from config/images.yml's defaults.runners. Native by construction
+          (D3a): an arm64 leg lands on arm64 hardware, never on QEMU. Defaults
+          to ubuntu-latest so a caller that predates the field still runs.
       structure_test:
         required: false
         type: boolean
@@ -55,7 +64,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
       digest: ${{ steps.build.outputs.digest }}
