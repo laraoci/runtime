@@ -42,3 +42,22 @@
   run bash -c "bin/matrix.sh >/dev/null"
   [ "$status" -eq 0 ]
 }
+
+@test "graph: a multi-line dockerfile value is rejected, not silently absorbed" {
+  # common.sh reads FOUR fields with four reads, one per line - which is correct,
+  # and documented at length against the @tsv alternative. The hole is on the
+  # VALUE side: yq -r emits a multi-line scalar as several lines, which desyncs
+  # the read and shifts every subsequent value. The failure is silent graph
+  # corruption, which is why it is worth a shape check on a repo-owned file.
+  run bash -c "CONFIG=tests/fixtures/multiline-dockerfile.yml bin/matrix.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"dockerfile"* ]]
+}
+
+@test "graph: affected.sh rejects a multi-line dockerfile value too (L7)" {
+  # Both readers or neither: matrix.sh and affected.sh must never disagree about
+  # whether config/images.yml is well-formed.
+  run bash -c "printf 'config/images.yml\n' | CONFIG=tests/fixtures/multiline-dockerfile.yml bin/affected.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"dockerfile"* ]]
+}

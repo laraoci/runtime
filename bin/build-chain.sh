@@ -155,14 +155,24 @@ done
 # interpolated into a yq expression even though read_image_graph has already
 # validated its shape. tests/structure/builder.yaml asserts this label, so a
 # locally built image has to carry it exactly as a CI-built one does.
+# ONE QUERY PER NAME, not two fields per record. A description is free prose, so
+# it is the one field in this file where a folded or multi-line YAML scalar is
+# plausible - and yq -r emits that as several lines, which desyncs a
+# two-reads-per-record loop and pairs every later name with the wrong text. Six
+# queries cost milliseconds in a script that then runs docker build, and the
+# desync class disappears rather than being guarded.
+#
+# strenv() keyed by a name read_image_graph has already validated, so nothing is
+# interpolated into the expression (config.bats pins that rule).
+#
+# tr: an OCI label is single-line by definition, so a multi-line description
+# folds to spaces instead of producing a label the registry would reject.
 declare -A image_description=()
-while IFS= read -r name && IFS= read -r desc; do
-  [[ -z "$name" ]] && continue
-  image_description["$name"]="$desc"
-done < <("$YQ" -r '
-  .images | to_entries | .[]
-  | [.key, (.value.description // "")]
-  | .[]' "$CONFIG")
+for name in "${IMAGE_NAMES[@]}"; do
+  image_description["$name"]="$(NAME="$name" "$YQ" -r \
+    '.images[strenv(NAME)].description // ""' "$CONFIG" | tr '\n' ' ')"
+  image_description["$name"]="${image_description[$name]% }"
+done
 
 # Ancestors first. read_image_graph has already rejected a dangling parent and a
 # cycle, so walking up cannot loop and cannot fall off the graph.

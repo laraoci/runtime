@@ -114,6 +114,28 @@ read_image_graph() {
       echo "       names must match ^[a-z0-9]([a-z0-9-]*[a-z0-9])?\$" >&2
       exit 1
     fi
+    # THE VALUE SIDE OF THE ONE-FIELD-PER-LINE PROTOCOL. The four reads above are
+    # deliberate - see the @tsv discussion - but they assume no FIELD contains a
+    # newline. yq -r emits a multi-line scalar as several lines, which desyncs the
+    # read and shifts every subsequent value: silent graph corruption, not an
+    # error. A shape check on each field is what turns it into one.
+    #
+    # Both are repo-owned values with a narrow shape, so this costs nothing that
+    # a legitimate config would want.
+    if [[ -n "$dockerfile" && ! "$dockerfile" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+      echo "error: image '$name' has an invalid dockerfile path in $CONFIG" >&2
+      echo "       got: $(printf '%q' "$dockerfile")" >&2
+      echo "       paths must match ^[A-Za-z0-9._/-]+\$ (a newline in the value" >&2
+      echo "       desyncs the one-field-per-line read and shifts every value" >&2
+      echo "       after it)" >&2
+      exit 1
+    fi
+    if [[ -n "$platforms" && ! "$platforms" =~ ^[a-z0-9/,_-]+$ ]]; then
+      echo "error: image '$name' has an invalid platforms override in $CONFIG" >&2
+      echo "       got: $(printf '%q' "$platforms")" >&2
+      echo "       expected a comma-joined list like linux/amd64,linux/arm64" >&2
+      exit 1
+    fi
     IMAGE_NAMES+=("$name")
     IMAGE_PARENT["$name"]="$parent"
     # SC2034: shellcheck analyses one file at a time, so it cannot see that
