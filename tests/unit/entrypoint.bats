@@ -360,3 +360,41 @@ TPL
   run cat "$PHP_INI_DIR/conf.d/zz-laraoci-preload.ini"
   [[ "$output" != *"auto_prepend_file"* ]]
 }
+
+@test "entrypoint: an unwritable TMPDIR is fatal, not a silent fallback (finding 4)" {
+  # THE ASYMMETRY THIS CLOSES. The write path below is fatal by default because a
+  # container that cannot render the ini starts on the BUILD-TIME configuration
+  # and silently ignores everything the operator set. mktemp failing produces the
+  # identical outcome - and it returned 0 BEFORE the opt-out was consulted, so the
+  # escape hatch was not merely unnecessary there, it was unreachable.
+  #
+  # Measured on the built image: `--read-only` alone started happily on 256M with
+  # PHP_MEMORY_LIMIT=1024M discarded, while `--read-only --tmpfs /tmp` refused
+  # with exit 1. Adding a writable /tmp made the container STRICTER.
+  [ "$(id -u)" -ne 0 ] || skip "running as root ignores file permissions"
+  echo 'memory_limit = 999M' >"$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  mkdir -p "$TMP/notmp"
+  chmod 0555 "$TMP/notmp"
+  TMPDIR="$TMP/notmp" PHP_MEMORY_LIMIT=1024M run bin/entrypoint.sh php -v
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no writable temporary directory"* ]]
+  [[ "$output" == *"LARAOCI_ALLOW_UNWRITABLE_CONFIG"* ]]
+  # The build-time file is left exactly as it was - refusing to start must not
+  # half-write the configuration it refused to render.
+  run cat "$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  [[ "$output" == *"999M"* ]]
+}
+
+@test "entrypoint: LARAOCI_ALLOW_UNWRITABLE_CONFIG=1 covers an unwritable TMPDIR too" {
+  # The read-only-rootfs case, where the build-time configuration IS the intended
+  # one. One flag, both failure paths - which is the whole point of the change.
+  [ "$(id -u)" -ne 0 ] || skip "running as root ignores file permissions"
+  echo 'memory_limit = 999M' >"$PHP_INI_DIR/conf.d/zz-laraoci.ini"
+  mkdir -p "$TMP/notmp"
+  chmod 0555 "$TMP/notmp"
+  export LARAOCI_ALLOW_UNWRITABLE_CONFIG=1
+  TMPDIR="$TMP/notmp" run bin/entrypoint.sh php -v
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"IGNORED"* ]]
+  [[ "$output" == *"handoff: php -v"* ]]
+}

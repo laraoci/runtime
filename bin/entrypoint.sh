@@ -62,9 +62,28 @@ render() {
     reject_unprintable "$name" "$value" "$(basename "$template")"
   done
 
+  # THE SAME GATE AS THE WRITE PATH BELOW, and for the same reason: keeping the
+  # build-time file means every PHP_* override is silently discarded, which is
+  # the outcome that comment calls indefensible. This path used to return 0
+  # BEFORE the opt-out was consulted, so the escape hatch was unreachable from
+  # here - and `docker run --read-only` (a common Kubernetes shape, no tmpfs)
+  # took it. Measured: --read-only alone started on 256M with
+  # PHP_MEMORY_LIMIT=1024M discarded and exit 0, while --read-only --tmpfs /tmp
+  # refused with exit 1. Adding a writable /tmp made the container STRICTER,
+  # which is the wrong way round.
   if ! tmp="$(mktemp 2>/dev/null)"; then
-    log "warning: cannot create a temporary file; keeping the build-time $target"
-    return 0
+    if [ "${LARAOCI_ALLOW_UNWRITABLE_CONFIG:-0}" = "1" ]; then
+      log "warning: no writable temporary directory - keeping the build-time $target."
+      log "         Every override for this file is being IGNORED"
+      log "         (LARAOCI_ALLOW_UNWRITABLE_CONFIG=1)."
+      return 0
+    fi
+    log "error: no writable temporary directory; cannot render $target."
+    log "       The container would start on the build-time configuration and"
+    log "       silently ignore every PHP_* override you set. Give it a writable"
+    log "       temporary directory (--tmpfs /tmp), or set"
+    log "       LARAOCI_ALLOW_UNWRITABLE_CONFIG=1 to accept those defaults."
+    exit 1
   fi
   # Every failure below leaves through die(); without this trap an envsubst
   # failure would exit on `set -e` and leave the temp file behind.
