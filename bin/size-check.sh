@@ -16,6 +16,8 @@ readonly MB=1000000
 report=0
 image_filter=""
 php=""
+explicit_ref=""
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --report)
@@ -32,8 +34,13 @@ while [[ $# -gt 0 ]]; do
       php="$2"
       shift 2
       ;;
+    --ref)
+      require_arg "$1" "${2:-}"
+      explicit_ref="$2"
+      shift 2
+      ;;
     -h | --help)
-      echo "usage: size-check.sh [--report] [--image NAME] [--php VERSION]" >&2
+      echo "usage: size-check.sh [--report] [--image NAME] [--php VERSION] [--ref IMAGE_REF]" >&2
       exit 0
       ;;
     *)
@@ -93,34 +100,60 @@ if [[ -n "$image_filter" ]]; then
   fi
 fi
 
+# THE RELEASE PATH MEASURES A DIGEST, and a digest cannot be derived from
+# config/images.yml - it is whatever BuildKit produced. --ref takes it verbatim
+# and skips the tag derivation below entirely.
+#
+# It requires --image because a digest names exactly one image: measuring all
+# six budgets against one reference would print five rows that are wrong and one
+# that happens not to be.
+#
+# The INSTRUMENT is deliberately unchanged. size_budgets was frozen with
+# `docker save | gzip | wc -c` (D17, docs/size-report-m1..m3.md); summing
+# layers[].size from the registry manifest is arguably the truer compressed
+# size, but it is a DIFFERENT number, and enforcing a budget set by one
+# instrument with a measurement from another turns a clean build into a
+# spurious release block. The ref changes; the yardstick does not.
+if [[ -n "$explicit_ref" && -z "$image_filter" ]]; then
+  echo "error: --ref requires --image - a reference names one image, not the set" >&2
+  exit 2
+fi
+
 # CI sets LARAOCI_TAG to `<php>-<debian>` for the leg it just built, and that
 # always wins. With it unset the tag is DERIVED the same way - it used to
 # default to the literal `local`, a tag nothing in this repository ever
 # produces, so every invocation without LARAOCI_TAG measured an image that
 # could not exist and died on `docker save`.
-tag="${LARAOCI_TAG:-}"
-if [[ -z "$tag" ]]; then
-  default_debian="$("$YQ" -r '.defaults.debian // ""' "$CONFIG")"
+tag=""
+if [[ -z "$explicit_ref" ]]; then
+  tag="${LARAOCI_TAG:-}"
+  # Nested inside the --ref guard, not merged with it: --ref bypasses tag
+  # derivation entirely, but LARAOCI_TAG still outranks derivation whenever a
+  # tag IS being derived. Flattening these into one condition makes the
+  # derivation below overwrite the tag CI just built.
+  if [[ -z "$tag" ]]; then
+    default_debian="$("$YQ" -r '.defaults.debian // ""' "$CONFIG")"
 
-  if [[ -z "$php" ]]; then
-    php="$("$YQ" -r '.php // {} | to_entries | .[] | select(.value.default == true) | .key' "$CONFIG")"
-    if [[ -z "$php" || "$php" == "null" ]]; then
-      echo "error: no PHP version carries 'default: true' in $CONFIG" >&2
-      echo "       pass --php, or set LARAOCI_TAG to the tag to measure" >&2
+    if [[ -z "$php" ]]; then
+      php="$("$YQ" -r '.php // {} | to_entries | .[] | select(.value.default == true) | .key' "$CONFIG")"
+      if [[ -z "$php" || "$php" == "null" ]]; then
+        echo "error: no PHP version carries 'default: true' in $CONFIG" >&2
+        echo "       pass --php, or set LARAOCI_TAG to the tag to measure" >&2
+        exit 2
+      fi
+    fi
+
+    # The §3.1 per-version override, applied exactly as bin/build-chain.sh
+    # applies it, so the tag measured here is the tag that was built.
+    debian="$("$YQ" -r ".php.\"$php\".debian // \"\"" "$CONFIG")"
+    [[ -z "$debian" || "$debian" == "null" ]] && debian="$default_debian"
+    if [[ -z "$debian" ]]; then
+      echo "error: no Debian suite for PHP $php in $CONFIG" >&2
       exit 2
     fi
-  fi
 
-  # The §3.1 per-version override, applied exactly as bin/build-chain.sh applies
-  # it, so the tag measured here is the tag that was built.
-  debian="$("$YQ" -r ".php.\"$php\".debian // \"\"" "$CONFIG")"
-  [[ -z "$debian" || "$debian" == "null" ]] && debian="$default_debian"
-  if [[ -z "$debian" ]]; then
-    echo "error: no Debian suite for PHP $php in $CONFIG" >&2
-    exit 2
+    tag="$php-$debian"
   fi
-
-  tag="$php-$debian"
 fi
 
 printf '%-12s %10s %10s %10s  %s\n' "IMAGE" "BUDGET_MB" "ACTUAL_MB" "DELTA_MB" "STATUS"
@@ -129,7 +162,11 @@ missing=0
 for image in "${budget_images[@]}"; do
   [[ -n "$image_filter" && "$image" != "$image_filter" ]] && continue
   budget_mb="$(IMAGE="$image" "$YQ" -r '.size_budgets[strenv(IMAGE)]' "$CONFIG")"
-  ref="$registry/$image:$tag"
+  if [[ -n "$explicit_ref" ]]; then
+    ref="$explicit_ref"
+  else
+    ref="$registry/$image:$tag"
+  fi
 
   # An image that is not in the daemon cannot be measured, and `docker save` on
   # a missing ref aborts the whole run under errexit - so a single unbuilt image
@@ -167,8 +204,13 @@ for image in "${budget_images[@]}"; do
 done
 
 if ((missing)); then
-  echo "note: MISSING rows are images not in the local daemon at tag '$tag'." >&2
-  echo "      build one with: bin/build-chain.sh --image <name> --php ${php:-<version>}" >&2
+  if [[ -n "$explicit_ref" ]]; then
+    echo "note: MISSING means '$explicit_ref' is not in the local daemon." >&2
+    echo "      the release path pulls the pushed digest before measuring it." >&2
+  else
+    echo "note: MISSING rows are images not in the local daemon at tag '$tag'." >&2
+    echo "      build one with: bin/build-chain.sh --image <name> --php ${php:-<version>}" >&2
+  fi
 fi
 
 ((report)) && exit 0
