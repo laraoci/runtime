@@ -86,12 +86,30 @@ services:
       PHP_OPCACHE_MEMORY_CONSUMPTION: 320
 ```
 
-| Variable                   | Default                                                   |
-|----------------------------|-----------------------------------------------------------|
-| `PHP_OPCACHE_PRELOAD`      | *(unset)*                                                 |
-| `LARAOCI_PRELOAD_FORCE`    | *(unset; `1` on `queue`)*                                 |
-| `LARAOCI_PRELOAD_ROOT`     | `/var/www/html`                                           |
-| `LARAOCI_PRELOAD_PATHS`    | `vendor/laravel/framework/src/Illuminate,vendor/composer` |
+**A wrapper command disables it.** The gate reads the *first argument* - `argv[0]`
+- so anything that is not the PHP binary itself reads as "not an FPM process":
+
+```bash
+# preload ON
+command: ["php-fpm"]
+# preload OFF - argv[0] is `sh`, and the reason is logged at start:
+#   laraoci: PHP_OPCACHE_PRELOAD is set but 'sh' is not an FPM process; ignoring
+command: ["sh", "-c", "php-fpm"]
+```
+
+`command: ["sh","-c",…]` is the usual shape in a Kubernetes manifest, and an init
+shim or a `wait-for-it`-style wrapper has the same effect. This is deliberate -
+the gate fails closed rather than enabling a preload the process would throw away
+- so if you need a wrapper, invoke the binary directly where you can, or set
+  `LARAOCI_PRELOAD_FORCE=1` to state that this process is long-lived.
+
+
+| Variable                   | Default                                                                        |
+|----------------------------|--------------------------------------------------------------------------------|
+| `PHP_OPCACHE_PRELOAD`      | *(unset)*                                                                      |
+| `LARAOCI_PRELOAD_FORCE`    | *(unset; `1` on `queue`)*                                                      |
+| `LARAOCI_PRELOAD_ROOT`     | `/var/www/html`                                                                |
+| `LARAOCI_PRELOAD_PATHS`    | `vendor/laravel/framework/src/Illuminate,vendor/composer`                      |
 | `LARAOCI_PRELOAD_IGNORE`   | `/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/` |
 
 **Both list variables replace the list; neither appends.** To preload your own
