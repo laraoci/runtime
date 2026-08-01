@@ -179,12 +179,31 @@ jobs:
           IMAGE: ${{ inputs.image }}
           PHP: ${{ inputs.php }}
           DEBIAN: ${{ inputs.debian }}
+          REGISTRY: ${{ steps.ns.outputs.registry }}
+          DATED_SUFFIX: ${{ inputs.dated_suffix }}
         run: |
           set -euo pipefail
-          base="php:${PHP}-fpm-${DEBIAN}"
+          # D28, DISCHARGED ON THE PUSH PATH. A child's real base is its LaraOCI
+          # parent, not the upstream PHP image - but until this milestone there
+          # was no truthful digest to name, because --load produces no manifest.
+          # On the release path the parent is a published, immutable dated tag,
+          # so both halves of the label can finally be correct.
+          #
+          # The PR path keeps the upstream base, and keeps the debt: there is
+          # still no parent manifest there (D27). The label is therefore
+          # accurate on every image that is PUBLISHED, which is the only place
+          # a consumer can read it.
+          parent="$(IMAGE="$IMAGE" yq -r '.images[strenv(IMAGE)].parent // ""' config/images.yml)"
+          if [ -n "$parent" ] && [ -n "$DATED_SUFFIX" ]; then
+            base="${REGISTRY}/${parent}:${PHP}-${DEBIAN}${DATED_SUFFIX}"
+            base_name="${REGISTRY}/${parent}"
+          else
+            base="php:${PHP}-fpm-${DEBIAN}"
+            base_name="docker.io/library/${base}"
+          fi
           digest="$(docker buildx imagetools inspect "$base" --format '{{.Manifest.Digest}}')"
           {
-            echo "base_name=docker.io/library/${base}"
+            echo "base_name=${base_name}"
             echo "base_digest=${digest}"
             echo "description=$(yq -r ".images.\"${IMAGE}\".description" config/images.yml)"
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -319,6 +338,22 @@ jobs:
           # parent. That trade is deliberately not pre-paid here.
           cache-from: ${{ inputs.push && 'type=gha' || '' }}
           cache-to: ${{ inputs.push && format('type=gha,mode={0}', inputs.cache_mode) || '' }}
+          # SPDX SBOM and SLSA provenance, attached to the pushed digest as
+          # in-toto attestation manifests (§11, §9.2). Predicates are
+          # `https://spdx.dev/Document` and `https://slsa.dev/provenance/v0.2`.
+          #
+          # mode=max, not the default min: min omits the Dockerfile, the build
+          # arguments and the layer source maps, which is most of what makes
+          # provenance answer the question anyone asks it. The cost is that the
+          # build arguments become PUBLIC - fine here, where they are the PHP
+          # version, the Debian suite and the uid/gid, and no secret has ever
+          # been passed as a build arg in this repository.
+          #
+          # Off on the load path: attestations produce a manifest INDEX, and
+          # BuildKit cannot load an index into the Docker daemon - the same
+          # constraint the multi-platform guard above exists for.
+          sbom: ${{ inputs.push }}
+          provenance: ${{ inputs.push && 'mode=max' || 'false' }}
 
         # docs/release-verification.md, discharged. Every step below runs against
         # the PUSHED DIGEST. Rebuilding on the load path and inspecting that would
@@ -372,6 +407,31 @@ jobs:
           # Same instrument as the frozen budgets - docker save | gzip - on the
           # digest that was just pulled.
           bin/size-check.sh --image "$IMAGE" --ref "$REF" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Assert the attestations are attached (§11)
+        if: ${{ inputs.push }}
+        env:
+          REF: ${{ steps.ns.outputs.registry }}/${{ inputs.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # An attestation nobody can retrieve is worth what an unverifiable
+          # signature is worth. This is the retrieval, run against the published
+          # digest, so LOCI-048's documented commands are known to work before
+          # they are written into the README as gospel.
+          sbom="$(docker buildx imagetools inspect "$REF" --format '{{ json .SBOM }}')"
+          packages="$(jq -r '[.. | .packages? // empty] | add | length' <<<"$sbom")"
+          if [ -z "$packages" ] || [ "$packages" = "null" ] || [ "$packages" -lt 1 ]; then
+            echo "::error::no SPDX packages in the SBOM attestation for ${REF}" >&2
+            exit 1
+          fi
+          echo "SBOM: ${packages} packages"
+
+          prov="$(docker buildx imagetools inspect "$REF" --format '{{ json .Provenance }}')"
+          if ! jq -e '[.. | .buildType? // empty] | length > 0' >/dev/null <<<"$prov"; then
+            echo "::error::no SLSA provenance attestation for ${REF}" >&2
+            exit 1
+          fi
+          jq -r '[.. | .buildType? // empty] | .[0]' <<<"$prov"
 
         # Two image-config assertions that container-structure-test cannot make:
         # labels, because CST reads them, but they are applied by THIS workflow

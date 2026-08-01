@@ -330,3 +330,20 @@ hadolint_step() {
   run grep -c "git ls-files '\*Dockerfile' '\*.Dockerfile'" Makefile
   [ "$output" -ge 1 ]
 }
+
+@test "workflows: the release build attaches an SBOM and max-mode provenance (§9.2, §11)" {
+  # mode=min is the BuildKit default and omits the Dockerfile, the build args
+  # and the source maps - the parts that make provenance answer "what actually
+  # went into this". §9.2 says max; a default that quietly degrades is the
+  # failure this pins.
+  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with.sbom' \
+    .github/workflows/build.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"inputs.push"* ]]
+
+  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with.provenance' \
+    .github/workflows/build.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mode=max"* ]]
+  [[ "$output" == *"inputs.push"* ]]
+}
