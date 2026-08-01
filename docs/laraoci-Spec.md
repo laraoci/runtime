@@ -84,6 +84,11 @@ PHP versions, Debian releases, extension sets, and image types live in `config/i
 | **D26** | `builder` inherits the hardened `policy.xml` and the Ghostscript purge **unchanged**     | An artifact built in a weaker environment than it runs in is the classic production-only surprise; `builder` is also the image most likely to meet untrusted input, since CI runs it against whatever a pull request contains (§3.2, §14)                                                                                                    |
 | **D27** | A child leg **builds its own ancestor chain** into the local daemon                      | Until M4 pushes, `ghcr.io/laraoci/runtime:*` exists in no registry and every matrix leg is a separate runner. `bin/build-chain.sh` builds ancestors in topological order on the `docker` driver, whose builder *is* the daemon; the `docker-container` driver cannot see a loaded image at all. No-ops once `push: true` (§9.1)              |
 | **D28** | `org.opencontainers.image.base.*` on child images is **wrong until M4** - accepted debt  | The label still names `php:<v>-fpm-<suite>` where the real base is `laraoci/runtime`. The PR path builds with `--load`, where no manifest digest exists, so M2 could not emit a truthful `base.digest` even if it corrected `base.name`. Recorded so it reads as known debt rather than as a defect discovered later (§11)                   |
+| **D29** | `queue` bakes **`LARAOCI_PRELOAD_FORCE=1`** but does **not** default `PHP_OPCACHE_PRELOAD` | The force flag is the queue-specific fact - a worker compiles once and serves thousands of jobs from the warm segment - and it is safe because it is INERT until an operator names the script. Defaulting the script name too would preload a vendor tree the image cannot guarantee it has, charge every one-off `artisan` call on the image for a segment it discards at exit, and require `PHP_OPCACHE_MEMORY_CONSUMPTION=320` on every queue container whether or not it preloads (§7.5, §7.7) |
+| **D30** | The preload script's `COPY` lives in **`runtime`**, not in `queue`                       | §7.1 lists it among what runtime installs. Every image then carries it inert, and `fpm` - the DEFAULT preload consumer under D22 - has it without a second copy, so the preload story is one file rather than two. Measured cost: 6,667 bytes, inside every budget's 5 MB rounding step (§7.7, `docs/size-report-m3.md`) |
+| **D31** | The scheduler single-fire test **anchors a 60 s window to a minute boundary**            | `schedule:work` fires on boundaries, so a naive 70 s window spans two of them and legitimately sees two fires - which reads as a double-fire defect. Anchoring gives 5 s of margin before the tick and 55 s after. Rejected: a sub-minute cadence (counting N fires in a short window is MORE race-prone) and driving `schedule:run` in a loop (which tests a loop we wrote, not the shipped `CMD`). Measured fires land on the boundary to the second (§7.6, LOCI-037) |
+| **D32** | The preload script logs through **`error_log()`**, never `fwrite(STDERR, …)`             | `STDIN`/`STDOUT`/`STDERR` are registered by the SAPI *after* opcache runs the preload script, so the v1 §7.7 listing raised `Undefined constant "STDERR"` - and an uncaught `Error` during preload **aborts startup**, taking the FPM master with it. `php://stderr` fails identically but **silently** (exit 255). `error_log()` is the only mechanism measured to survive and still reach stderr, at the cost of a `[date]` prefix. The spec's own listing is corrected; this is the milestone's spec correction (§7.7) |
+| **D33** | **`/Console/` joins the default `LARAOCI_PRELOAD_IGNORE`**                               | The consequence of excluding `vendor/symfony` (§7.7), not an independent choice: without it `Illuminate\Console\Command` cannot link and ~78 command subclasses fail behind it, so the default compiled 130 classes that could never be preloaded and warned 176 times per start. Measured 2026-07-31 on a Laravel 13 tree: -131 warnings, -2.35 MB, at a cost of 80 preloaded classes that no `fpm` request and no steady-state `queue` worker touches. It belongs by the list's own logic - every other entry is a subtree off the serving hot path (§7.7) |
 
 ### 3.4 Why `runtime` uses the `-fpm` upstream variant (D18)
 
@@ -593,7 +598,7 @@ $root   = getenv('LARAOCI_PRELOAD_ROOT') ?: '/var/www/html';
 $paths  = getenv('LARAOCI_PRELOAD_PATHS')
        ?: 'vendor/laravel/framework/src/Illuminate,vendor/composer';
 $ignore = getenv('LARAOCI_PRELOAD_IGNORE')
-       ?: '/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/';
+       ?: '/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/';
 
 $ignores  = array_filter(explode(',', $ignore));
 $compiled = $skipped = 0;
@@ -633,9 +638,10 @@ foreach (array_filter(explode(',', $paths)) as $relative) {
 }
 
 restore_error_handler();
-fwrite(STDERR, sprintf(
-    "laraoci: preloaded %d files, skipped %d%s", $compiled, $skipped, PHP_EOL
-));
+
+// NOT fwrite(STDERR, ...) - see the constraint below. error_log() is the only
+// mechanism measured to survive preload AND reach stderr.
+error_log(sprintf('laraoci: preloaded %d files, skipped %d', $compiled, $skipped));
 ```
 
 Constraints documented alongside it:
@@ -644,9 +650,12 @@ Constraints documented alongside it:
 - **Requires `vendor/` to exist at container start.** With an empty root the script no-ops and logs zero - silent, not fatal, by design.
 - **Requires a container restart to change anything preloaded.** Consistent with `validate_timestamps = 0`.
 - **Costs opcache memory.** Preloaded entries count against `opcache.memory_consumption`; the documented pairing raises it to 320 MB. `max_accelerated_files` must exceed the preloaded file count.
-- **No `opcache.preload_user` needed.** That directive is only required when the FPM master runs as root; LaraOCI runs as `laravel` throughout.
+- **The startup line goes through `error_log()`, never `fwrite(STDERR, …)` (D32).** `STDIN`/`STDOUT`/`STDERR` are registered by the SAPI *after* opcache executes the preload script, so the constant does not exist yet - and an uncaught `Error` during preload **aborts startup**, so the v1 listing of this script did not merely log badly, it refused to start every container that enabled preload and the FPM master with it. `fopen('php://stderr')` fails the same way but **silently** (exit 255, no message), which is the trap for anyone "fixing" this. Measured on 8.3/8.4/8.5, CLI and a non-root FPM master. The cost is the `[date] ` prefix `error_log = /proc/self/fd/2` adds, so everything that reads this line matches it as a substring.
+- **No `opcache.preload_user` needed.** That directive is only required when the FPM master runs as root; LaraOCI runs as `laravel` throughout. Verified from both sides on 8.3/8.4/8.5: the same image run as **root** dies with `"opcache.preload" requires "opcache.preload_user" when running under uid 0`, and at uid 1000 it preloads and reaches "ready to handle connections".
 - Application code is deliberately *not* in the default path set. Preloading app classes is a real optimisation but is application-specific; consumers point `LARAOCI_PRELOAD_PATHS` at `app` themselves.
 - **`vendor/symfony` is deliberately excluded from the default**, reversing the v1 draft. Illuminate's own preloading drags in the Symfony components it actually uses; compiling the full tree additionally loads Console, Mailer, and HttpKernel subtrees that most applications never touch, inflating preload memory for no hit-rate gain. It is also the largest source of benign "unlinked class" skips, which makes the startup line misleading. Documented as an opt-in append.
+- **`/Console/` is in the default ignore set (D33), as the consequence of the exclusion above.** Without the Symfony tree, `Illuminate\Console\Command` cannot link its parent, and the ~78 artisan commands extending it fail behind it - so the default was compiling 130 classes that provably could not be preloaded, and saying so 176 times at every start. Measured on a Laravel 13 tree (2026-07-31): the entry removes 131 of those 176 warnings and 2.35 MB of preload memory, and costs 80 genuinely-preloaded classes that are on no hot path - `fpm` never touches console code in a request, and `queue` loads it once at worker start and then runs for up to `--max-time=3600`. Adding `vendor/symfony` back instead was measured and rejected: 153 warnings for +12.5 MB. Consumers with artisan-heavy workloads restate the list without the entry.
+- **About 45 "unlinked class" warnings remain and are expected output.** Their parents live in `Symfony\…`, `Psr\…`, `Monolog\…` and `GuzzleHttp\…`, all outside the path set by design. Reaching zero would mean preloading those trees at a memory cost the default declines. The documentation says so, so that an operator reads them as normal rather than as a fault.
 - Tuning is measurable: `opcache_get_status()['preload_statistics']` reports the memory consumed and the class/function counts. The docs show this rather than asserting a number.
 
 ---
@@ -823,4 +832,4 @@ Questions 1–3 of the v2 draft are closed against primary sources and folded in
 
 1. **Ghostscript purge durability.** The purge depends on `install-php-extensions` continuing to install Ghostscript as a normal package rather than pinning or holding it. M1 made this sharper, not softer: because the tree must be named explicitly (§3.2), a rename such as `libgs10` -> `libgs11` breaks the build rather than silently leaving the interpreter behind - loud, but on an unrelated PR. The structure test is the backstop. Still worth an upstream issue asking whether Ghostscript can be made opt-out.
 2. **PHP 8.6.** An alpha is already built upstream with full trixie coverage. Confirm the intent to add it at GA as a fourth `supported` version - which takes the release matrix from 36 legs to 48 and makes the affected-images filter (§9.1) load-bearing rather than a nicety.
-3. **Budgets for the other five images.** `runtime` is frozen; `cli`, `fpm`, `builder`, `queue`, and `scheduler` still carry v2-draft placeholders that sit *below* their own parent. M2 and M3 measure and freeze them the same way. Not a desk question either - it needs the images to exist.
+3. ~~**Budgets for the other five images.**~~ **CLOSED by M2 and M3.** All six are now measured and frozen in `config/images.yml`, and no placeholder survives. `cli`, `fpm` and `builder` were measured at M2 (`docs/size-report-m2.md`); `queue` and `scheduler` at M3 (`docs/size-report-m3.md`), where both landed on `runtime`'s own 260 because a `CMD` and an `ENV` create no filesystem layer. The v2-draft placeholders sat *below* the parent each image descends from, which is impossible by construction - and that impossibility was the point: each reported `OVER` the moment its image was first built.

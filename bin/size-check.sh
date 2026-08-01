@@ -73,9 +73,9 @@ fmt_mb() {
   printf '%s%d.%02d' "$sign" $((hundredths / 100)) $((hundredths % 100))
 }
 
-registry="$(yq -r '.defaults.registry' "$CONFIG")"
+registry="$("$YQ" -r '.defaults.registry' "$CONFIG")"
 
-mapfile -t budget_images < <(yq -r '.size_budgets | keys | .[]' "$CONFIG")
+mapfile -t budget_images < <("$YQ" -r '.size_budgets | keys | .[]' "$CONFIG")
 
 # A --image that matches no budget used to produce an empty loop and exit 0,
 # so an image missing from size_budgets got NO size coverage and still reported
@@ -100,10 +100,10 @@ fi
 # could not exist and died on `docker save`.
 tag="${LARAOCI_TAG:-}"
 if [[ -z "$tag" ]]; then
-  default_debian="$(yq -r '.defaults.debian // ""' "$CONFIG")"
+  default_debian="$("$YQ" -r '.defaults.debian // ""' "$CONFIG")"
 
   if [[ -z "$php" ]]; then
-    php="$(yq -r '.php // {} | to_entries | .[] | select(.value.default == true) | .key' "$CONFIG")"
+    php="$("$YQ" -r '.php // {} | to_entries | .[] | select(.value.default == true) | .key' "$CONFIG")"
     if [[ -z "$php" || "$php" == "null" ]]; then
       echo "error: no PHP version carries 'default: true' in $CONFIG" >&2
       echo "       pass --php, or set LARAOCI_TAG to the tag to measure" >&2
@@ -113,7 +113,7 @@ if [[ -z "$tag" ]]; then
 
   # The §3.1 per-version override, applied exactly as bin/build-chain.sh applies
   # it, so the tag measured here is the tag that was built.
-  debian="$(yq -r ".php.\"$php\".debian // \"\"" "$CONFIG")"
+  debian="$("$YQ" -r ".php.\"$php\".debian // \"\"" "$CONFIG")"
   [[ -z "$debian" || "$debian" == "null" ]] && debian="$default_debian"
   if [[ -z "$debian" ]]; then
     echo "error: no Debian suite for PHP $php in $CONFIG" >&2
@@ -128,7 +128,7 @@ fail=0
 missing=0
 for image in "${budget_images[@]}"; do
   [[ -n "$image_filter" && "$image" != "$image_filter" ]] && continue
-  budget_mb="$(IMAGE="$image" yq -r '.size_budgets[strenv(IMAGE)]' "$CONFIG")"
+  budget_mb="$(IMAGE="$image" "$YQ" -r '.size_budgets[strenv(IMAGE)]' "$CONFIG")"
   ref="$registry/$image:$tag"
 
   # An image that is not in the daemon cannot be measured, and `docker save` on

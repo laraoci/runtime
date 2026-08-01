@@ -5,11 +5,11 @@ shared runtime layer, and a maintained security posture. You bring `vendor/` and
 your code; LaraOCI brings a correct PHP runtime, signal handling, logging, and
 weekly rebuilds.
 
-> **Status:** pre-release. M0 (foundations), M1 (the shared `runtime` layer) and
-> M2 (`cli`, `fpm`, `builder`) are complete; `queue` and `scheduler` arrive in
-> M3, and publishing, signing and scanning in M4. **Nothing is published yet** -
-> the image references below are what M4 will push; until then images are built
-> locally with `bin/build-chain.sh`. See `docs/laraoci-Spec.md`.
+> **Status:** pre-release. M0 (foundations), M1 (the shared `runtime` layer),
+> M2 (`cli`, `fpm`, `builder`) and M3 (`queue`, `scheduler`, opcache preload) are
+> complete; publishing, signing and scanning arrive in M4. **Nothing is published
+> yet** - the image references below are what M4 will push; until then images are
+> built locally with `bin/build-chain.sh`. See `docs/laraoci-Spec.md`.
 
 ## Image catalog
 
@@ -19,8 +19,8 @@ weekly rebuilds.
 | `cli`       | `runtime`            | Artisan commands, migrations, one-off tasks                     |
 | `fpm`       | `runtime`            | PHP-FPM behind Nginx/Caddy/Traefik                              |
 | `builder`   | `runtime`            | Composer + Node build toolchain (not for production runtime)    |
-| `queue`     | `cli`                | Laravel queue worker                                            |
-| `scheduler` | `cli`                | Laravel scheduler                                               |
+| `queue`     | `cli`                | Laravel queue worker - [drains on SIGTERM](#queue---graceful-shutdown-and-the-one-setting-you-must-change), raise your grace period |
+| `scheduler` | `cli`                | Laravel scheduler - [run exactly one replica](#scheduler---run-exactly-one-replica) |
 
 ## Configuration
 
@@ -56,6 +56,131 @@ defaults while ignoring everything you set.
 If the build-time configuration is what you want — a read-only root filesystem,
 say — set `LARAOCI_ALLOW_UNWRITABLE_CONFIG=1`. The container then starts and
 logs which file it could not write. Your `PHP_*` overrides will not apply.
+
+### Preload - opt-in opcache preloading
+
+Every image ships a preload script at `/usr/local/share/laraoci/preload.php`. It
+is **inert until you name it**, and naming it is necessary but not sufficient:
+
+```bash
+PHP_OPCACHE_PRELOAD=/usr/local/share/laraoci/preload.php
+PHP_OPCACHE_MEMORY_CONSUMPTION=320
+```
+
+**Preload is FPM-only by default.** The entrypoint writes the `opcache.preload`
+directive only when the process it is about to start is `php-fpm`. opcache in a
+CLI process is per-process - the shared segment is created at startup and
+destroyed at exit - so on `cli` every `php artisan` call would compile the whole
+framework and throw the result away.
+
+**Long-lived CLI workers opt in with `LARAOCI_PRELOAD_FORCE=1`.** `queue` bakes
+that flag, because a queue worker compiles once and then serves thousands of jobs
+from the warm segment. It still does nothing until you name the script:
+
+```yaml
+services:
+  queue:
+    image: ghcr.io/laraoci/queue:8.4-trixie
+    environment:
+      PHP_OPCACHE_PRELOAD: /usr/local/share/laraoci/preload.php
+      PHP_OPCACHE_MEMORY_CONSUMPTION: 320
+```
+
+**A wrapper command disables it.** The gate reads the *first argument* - `argv[0]`
+- so anything that is not the PHP binary itself reads as "not an FPM process":
+
+```bash
+# preload ON
+command: ["php-fpm"]
+# preload OFF - argv[0] is `sh`, and the reason is logged at start:
+#   laraoci: PHP_OPCACHE_PRELOAD is set but 'sh' is not an FPM process; ignoring
+command: ["sh", "-c", "php-fpm"]
+```
+
+`command: ["sh","-c",…]` is the usual shape in a Kubernetes manifest, and an init
+shim or a `wait-for-it`-style wrapper has the same effect. This is deliberate -
+the gate fails closed rather than enabling a preload the process would throw away
+- so if you need a wrapper, invoke the binary directly where you can, or set
+  `LARAOCI_PRELOAD_FORCE=1` to state that this process is long-lived.
+
+
+| Variable                   | Default                                                                        |
+|----------------------------|--------------------------------------------------------------------------------|
+| `PHP_OPCACHE_PRELOAD`      | *(unset)*                                                                      |
+| `LARAOCI_PRELOAD_FORCE`    | *(unset; `1` on `queue`)*                                                      |
+| `LARAOCI_PRELOAD_ROOT`     | `/var/www/html`                                                                |
+| `LARAOCI_PRELOAD_PATHS`    | `vendor/laravel/framework/src/Illuminate,vendor/composer`                      |
+| `LARAOCI_PRELOAD_IGNORE`   | `/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/` |
+
+**Both list variables replace the list; neither appends.** To preload your own
+classes as well, restate the defaults:
+
+```bash
+LARAOCI_PRELOAD_PATHS=vendor/laravel/framework/src/Illuminate,vendor/composer,app
+```
+
+`vendor/symfony` is deliberately absent from the default. Illuminate already
+pulls in the Symfony components it uses; compiling the whole tree adds Mailer and
+HttpKernel subtrees most applications never touch, for no hit-rate gain.
+
+**`/Console/` is ignored by default, and that follows from the line above.**
+Without the Symfony tree, `Illuminate\Console\Command` cannot resolve its parent
+class, so it and the ~78 artisan commands extending it cannot be preloaded - they
+only produce warnings. Console code is on no hot path either: `fpm` never touches
+it while serving a request, and `queue` loads it once at worker start. Measured
+on a Laravel 13 tree, ignoring it removes 131 of 176 startup warnings and 2.4 MB
+of preload memory, and costs 80 preloaded classes that were doing nothing.
+
+If your workload really is artisan-heavy and you want them back, restate the list
+without that last entry:
+
+```bash
+LARAOCI_PRELOAD_IGNORE=/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/
+```
+
+**You will still see about 45 `Can't preload unlinked class` warnings** at start
+on a typical Laravel application, naming parents in `Symfony\…`, `Psr\…`,
+`Monolog\…` and `GuzzleHttp\…`. That is **expected output, not a fault**: those
+packages are outside the preload path set by design, so classes extending them
+are compiled but not preloaded. Silencing them entirely would mean preloading
+those trees too, at a memory cost the default deliberately declines.
+
+**Four things to know before you turn it on:**
+
+1. **It needs `vendor/` at container start.** With an empty root the script
+   no-ops, logs zero and the container starts normally - silent, not fatal, by
+   design. If you bind-mount your application, preload compiles whatever was
+   there *when the container started*.
+2. **It costs opcache memory.** Preloaded entries count against
+   `opcache.memory_consumption`, which is why the pairing above raises it to
+   320 MB. `opcache.max_accelerated_files` (20000 by default) must exceed the
+   preloaded file count, or compilation stops part way and the startup line
+   reports a number lower than reality.
+3. **Changing anything preloaded requires a container restart.** Consistent with
+   `opcache.validate_timestamps = 0`.
+4. **Measure, do not guess.** The startup line tells you it ran:
+
+   ```
+   laraoci: preload enabled: /usr/local/share/laraoci/preload.php
+   [31-Jul-2026 10:52:49 UTC] laraoci: preloaded 1325 files, skipped 362
+   ```
+
+   Both lines go to stderr. The first is the entrypoint's; the second is the
+   script's, carrying the timestamp `error_log = /proc/self/fd/2` adds. If you
+   set `log_errors = Off`, the second line disappears - the preload still runs.
+
+   and `opcache_get_status()` tells you what it cost:
+
+   ```bash
+   docker compose exec queue php -r \
+     'print_r(opcache_get_status()["preload_statistics"]);'
+   ```
+
+   That reports the memory consumed and the class/function/script counts. Tune
+   against those numbers rather than against a target someone else measured.
+
+You do not need `opcache.preload_user`. It is only required when the FPM master
+runs as root, and LaraOCI runs as `laravel` throughout.
 
 ### `fpm` - pool sizing and shutdown
 
@@ -159,6 +284,124 @@ from the upstream PHP image (`make`, `gcc`, `g++`) is present but is not
 sufficient on its own. Packages shipping prebuilt binaries are unaffected, which
 covers the ordinary Laravel front-end stack. If you need `node-gyp`, add
 `apt-get install -y python3` to your own build stage.
+
+### `queue` - graceful shutdown, and the one setting you must change
+
+The image ships:
+
+```
+CMD ["php","artisan","queue:work","--no-interaction","--tries=3","--max-time=3600","--rest=0.1"]
+```
+
+| Flag              | Why                                                                        |
+|-------------------|----------------------------------------------------------------------------|
+| `--tries=3`       | A poison job reaches `failed_jobs` instead of looping forever              |
+| `--max-time=3600` | Bounds worker lifetime so leaks and stale state never accumulate           |
+| `--rest=0.1`      | Yields the CPU for 100 ms between jobs                                     |
+| `--no-interaction`| A prompt in a container is a hung worker                                   |
+
+`queue:work` traps `SIGTERM` through `pcntl` and finishes the job in hand before
+exiting. The image carries `STOPSIGNAL SIGTERM`, `pcntl`/`posix` are compiled in,
+and `tini` is PID 1 forwarding the signal - so `docker stop` **drains** rather
+than truncates.
+
+> **⚠️ Your orchestrator's grace period must exceed your job timeout.**
+> Laravel's default job timeout is **60 s**. Docker's default stop grace is
+> **10 s**. Against those defaults every rolling deploy kills in-flight jobs
+> after ten seconds, no matter how correct this image is. **The image cannot fix
+> this** - it does not know how long your jobs run.
+
+```bash
+docker stop --timeout 120 my-worker
+```
+
+```yaml
+# compose
+services:
+  queue:
+    image: ghcr.io/laraoci/queue:8.4-trixie
+    stop_grace_period: 120s
+```
+
+```yaml
+# kubernetes
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 120
+```
+
+Pick a number above your longest job's timeout, and raise both together if you
+change either. `--timeout` is deliberately not set on the shipped `CMD`, so
+Laravel's 60 s default applies until you set one.
+
+**What getting it wrong looks like.** A 20 s job against a 2 s grace, which is the
+same shape as a 60 s job against Docker's 10 s default:
+
+```
+$ docker stop --timeout 2 worker      # returns after 2.4s
+$ docker inspect worker --format '{{.State.ExitCode}}'
+137                                    # 128+9 = SIGKILL
+```
+
+The job wrote its start marker and never its end. Exit **137** on a worker is the
+signature of this specific mistake - the grace period expiring on a container that
+was still working. A drained worker exits **0**, and `docker stop` returns in the
+job's remaining time rather than at the ceiling.
+
+**No `HEALTHCHECK`, deliberately.** A queue worker has no meaningful synchronous
+health signal, and a naive check is worse than none - it reports healthy while the
+queue backs up behind a wedged worker. Monitor the queue instead:
+
+```bash
+php artisan queue:monitor default:100     # on a schedule
+```
+
+or run Horizon, which is built for it.
+
+### `scheduler` - run exactly one replica
+
+The image ships `CMD ["php","artisan","schedule:work","--no-interaction"]`: one
+foreground process that stays alive, dispatches your due tasks on each minute
+boundary, and logs to stdout like every other container. No cron daemon, no log
+files, no process tree to reap.
+
+> **⚠️ Exactly one replica.** Two scheduler containers fire every task twice.
+> There is no image-level guard against this and there cannot be - an image
+> cannot know how many copies of itself are running.
+
+```yaml
+# compose
+services:
+  scheduler:
+    image: ghcr.io/laraoci/scheduler:8.4-trixie
+    deploy:
+      replicas: 1
+```
+
+```yaml
+# kubernetes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate    # never two schedulers overlapping during a rollout
+```
+
+`Recreate` matters as much as `replicas: 1`: the default `RollingUpdate` starts
+the new pod before terminating the old one, so a rollout briefly runs two
+schedulers - and a task due in that window fires twice.
+
+**If you need the scheduler to survive a node failure**, that is *application*
+configuration, not image configuration. Give the tasks `withoutOverlapping()` and
+point the cache at a **shared** store (Redis, database) so the lock is visible to
+every replica:
+
+```php
+Schedule::command('reports:build')->hourly()->withoutOverlapping();
+```
+
+With the default per-container cache store each scheduler takes its own local
+lock and the guard does nothing.
 
 ## Repository layout
 

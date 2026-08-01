@@ -39,6 +39,10 @@ setup_file() {
 
   capture migrate compose run --rm cli \
     php artisan migrate --force --no-interaction
+  # The migration OUTCOME, read separately from the command's own wording - see
+  # the case below for why the wording cannot carry the assertion.
+  capture migrate_status compose run --rm cli \
+    php artisan migrate:status --no-interaction
   capture about compose run --rm cli php artisan about
 
   http_get root /
@@ -82,7 +86,32 @@ setup_file() {
 
 @test "cli: artisan migrate runs against sqlite" {
   assert_step_ok migrate
-  [[ "$(step_output migrate)" == *"DONE"* ]]
+
+  # ORDER-INDEPENDENT ON PURPOSE. This used to assert the word DONE, which
+  # artisan prints only when THIS invocation applied the migrations - so the case
+  # silently required request-path.bats to be the first suite to migrate. It was,
+  # until M3 added queue-shutdown.bats: that file sorts earlier in run.sh's glob
+  # and calls ensure_app_migrated, so migrate here correctly reported "Nothing to
+  # migrate" and this went red with nothing whatsoever wrong.
+  #
+  # The claim is that the cli image can drive migrations against the fixture's
+  # sqlite database. That is equally true whether this call did the work or found
+  # it already done, so the assertion is on the SCHEMA rather than on the wording
+  # - which is both order-independent and strictly stronger, because "DONE" in
+  # the output never proved the tables were actually there.
+  local out
+  out="$(step_output migrate)"
+  [[ "$out" == *"DONE"* || "$out" == *"Nothing to migrate"* ]]
+
+  assert_step_ok migrate_status
+  local status_out
+  status_out="$(step_output migrate_status)"
+  if [[ "$status_out" == *"Pending"* || "$status_out" != *"Ran"* ]]; then
+    echo "migrate:status does not show a fully applied schema:" >&2
+    echo "$status_out" >&2
+  fi
+  [[ "$status_out" == *"Ran"* ]]
+  [[ "$status_out" != *"Pending"* ]]
 }
 
 @test "cli: artisan about reports the environment" {

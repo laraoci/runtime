@@ -42,7 +42,7 @@ done
 # Supported (non-deprecated) PHP versions, in file order, each with the Debian
 # suite it builds against. A per-version `debian:` key overrides defaults.debian
 # - the §3.1 transition mechanism, unset in normal operation (spec §271).
-default_debian="$(yq -r '.defaults.debian' "$CONFIG")"
+default_debian="$("$YQ" -r '.defaults.debian' "$CONFIG")"
 php_versions=()
 declare -A php_debian=()
 # One field per line, two reads per record - the same idiom as
@@ -58,7 +58,7 @@ while IFS= read -r v && IFS= read -r d; do
   else
     php_debian["$v"]="$default_debian"
   fi
-done < <(yq -r '
+done < <("$YQ" -r '
   .php | to_entries | .[]
   | select(.value.status != "deprecated")
   | [.key, (.value.debian // "")]
@@ -67,7 +67,7 @@ done < <(yq -r '
 read_image_graph
 
 # Platform defaults are read once; a per-image override arrives in the graph.
-mapfile -t default_platforms < <(yq -r '.defaults.platforms | .[]' "$CONFIG")
+mapfile -t default_platforms < <("$YQ" -r '.defaults.platforms | .[]' "$CONFIG")
 
 legs=()
 for php in "${php_versions[@]}"; do

@@ -89,6 +89,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          # config/images.yml decides the matrix, the image identity and the
+          # budgets; the runner's preinstalled yq is a version nothing pinned.
+          # Same reasoning as bin/lib/common.sh, which resolves it through this
+          # fetcher for every script.
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
         # The registry comes from config/images.yml rather than from a literal.
         # It used to be hardcoded, which was harmless while nothing else derived
         # it - but PARENT_REF now does, and a tag and a parent reference that
@@ -246,6 +257,12 @@ jobs:
         # rather than by the Dockerfile, and the stop signal, because CST's
         # metadataTest schema has no field for it and a container cannot read
         # its own.
+        #
+        # Skipped on the push path, like the structure tests and the size report -
+        # see docs/release-verification.md, which is the M4 acceptance criterion
+        # for all of them. This step is the ONLY place STOPSIGNAL is asserted
+        # (container-structure-test has no field for it), so it is the most
+        # consequential of the three.
       - name: Assert the image metadata (§11, §6.2)
         if: ${{ !inputs.push }}
         env:
@@ -285,9 +302,12 @@ jobs:
       # nothing to inspect locally; M4 re-does size measurement against the
       # registry once `imagetools inspect` has something to look at.
       #
-      # CONSEQUENCE, stated so it is not lost: the artifact that gets PUBLISHED
-      # is the one artifact never structure-tested. M4 must run the structure
-      # tests against the pushed digest, not only against the PR build.
+      # CONSEQUENCE, stated so it is not lost: the artifact that gets
+      # PUBLISHED is the one artifact never structure-tested - and the same
+      # is true of the metadata assertion and the size check.
+      # docs/release-verification.md records what the push path must do
+      # instead, per step, and tests/unit/workflows.bats fails if a new gate
+      # is added without a row there.
       # No install step: bin/structure-test.sh resolves the pinned checker through
       # bin/fetch-tools.sh itself, the same way lint.yml's bats job does. The step
       # that used to be here passed the hyphenated tool name straight into a shell
@@ -305,6 +325,8 @@ jobs:
           set -euo pipefail
           bin/structure-test.sh --image "$IMAGE" --ref "$IMAGE_REF"
 
+      # Advisory here, and skipped entirely on the push path; §9.2 and D17 make
+      # the release form ENFORCING. See docs/release-verification.md.
       - name: Size report (D17, advisory on PRs)
         if: ${{ !inputs.push }}
         env:

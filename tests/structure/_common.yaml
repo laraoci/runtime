@@ -43,6 +43,30 @@ metadataTest:
       value: "192"
     - key: PHP_OPCACHE_MAX_ACCELERATED_FILES
       value: "20000"
+    # §6.4, D14. Declared rather than left to the getenv() fallbacks compiled
+    # into preload.php, for the same reason LARAOCI_DEFAULT_BINARY is declared
+    # rather than left to the entrypoint's: `docker inspect` should answer "what
+    # will this preload?" without anyone reading a PHP file. The script keeps its
+    # own fallbacks, so it still behaves when run outside a LaraOCI image.
+    #
+    # THESE VALUES ARE THE ONES THAT ACTUALLY APPLY. With the ENVs set, the
+    # script's fallbacks are unreachable inside every LaraOCI image, so a drift
+    # between the two would be invisible rather than harmful - and it is THIS
+    # side that §6.4 pins. Asserted against §6.4's literals here; the script's
+    # fallbacks are exercised on their own by LOCI-038's case C, which runs with
+    # LARAOCI_PRELOAD_ROOT and _PATHS overridden.
+    - key: LARAOCI_PRELOAD_ROOT
+      value: /var/www/html
+    - key: LARAOCI_PRELOAD_PATHS
+      value: vendor/laravel/framework/src/Illuminate,vendor/composer
+    # /Console/ is the D33 entry and the only one that is not in §7.7's original
+    # list. It belongs by the list's own logic - every other entry is a subtree
+    # that is not on the serving hot path - and it is load-bearing: with
+    # vendor/symfony excluded (§7.7), Illuminate\Console\Command cannot link, and
+    # 78 command subclasses fail behind it. Measured, it removes 131 of 176
+    # startup warnings and 2.35 MB of preload memory.
+    - key: LARAOCI_PRELOAD_IGNORE
+      value: /tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/
     - key: MAGICK_THREAD_LIMIT
       value: "1"
     - key: MAGICK_TMPDIR
@@ -72,6 +96,14 @@ fileExistenceTests:
   - name: ini template ships under the LaraOCI assets path (§6.1)
     path: /usr/local/share/laraoci/templates/zz-laraoci.ini.template
     shouldExist: true
+  # D30: the script is copied by RUNTIME, not by queue, so every image carries it
+  # inert and `fpm` - the DEFAULT preload consumer under D22 - has it without a
+  # second copy. Asserted here rather than in queue.yaml for exactly that reason:
+  # "true of every image" is what this file is for.
+  - name: preload script ships under the LaraOCI assets path (§7.7, D14)
+    path: /usr/local/share/laraoci/preload.php
+    shouldExist: true
+    permissions: '-rw-r--r--'
   - name: entrypoint is executable
     path: /usr/local/bin/laraoci-entrypoint
     shouldExist: true
@@ -222,6 +254,18 @@ commandTests:
     command: sh
     args: ["-c", "printenv PHP_OPCACHE_PRELOAD"]
     exitCode: 1
+
+  # §7.7. opcache.preload_user is only required when the FPM master runs as root,
+  # and LaraOCI runs as `laravel` throughout. Measured 2026-07-31: the upstream
+  # image as root dies with `"opcache.preload" requires "opcache.preload_user"
+  # when running under uid 0`, and the same image at uid 1000 preloads and
+  # reaches "ready to handle connections". Asserted ABSENT rather than left
+  # unmentioned, because adding it is the plausible wrong fix for a preload
+  # permission error and PHP would accept it silently.
+  - name: opcache.preload_user is not set (§7.7)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["php", "-r", "echo ini_get('opcache.preload_user') === '' ? 'ABSENT' : 'SET';"]
+    expectedOutput: ['^ABSENT$']
 
   - name: rendered ini - expose_php is Off (§6.5)
     command: /usr/local/bin/laraoci-entrypoint

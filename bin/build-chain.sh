@@ -98,7 +98,7 @@ fi
 # a deprecated version is not built at all (§5 schema rules). One field per
 # line, two reads per record - see the comment in bin/matrix.sh for why `@tsv`
 # with IFS=$'\t' silently shifts a row whose optional field is empty.
-default_debian="$(yq -r '.defaults.debian' "$CONFIG")"
+default_debian="$("$YQ" -r '.defaults.debian' "$CONFIG")"
 declare -A php_debian=()
 supported_php=()
 while IFS= read -r v && IFS= read -r d; do
@@ -109,7 +109,7 @@ while IFS= read -r v && IFS= read -r d; do
   else
     php_debian["$v"]="$default_debian"
   fi
-done < <(yq -r '
+done < <("$YQ" -r '
   .php | to_entries | .[]
   | select(.value.status != "deprecated")
   | [.key, (.value.debian // "")]
@@ -133,7 +133,7 @@ fi
 # Dockerfiles' ARG defaults: D8 exists because a UID that silently differs
 # between images is the failure mode, so a config that does not state the
 # identity fails here rather than letting a second source of truth exist.
-mapfile -t defaults < <(yq -r '
+mapfile -t defaults < <("$YQ" -r '
   [.defaults.registry, .defaults.user.name, .defaults.user.uid, .defaults.user.gid] | .[]' "$CONFIG")
 if ((${#defaults[@]} != 4)); then
   echo "error: $CONFIG does not define defaults.registry and defaults.user.{name,uid,gid}" >&2
@@ -155,14 +155,24 @@ done
 # interpolated into a yq expression even though read_image_graph has already
 # validated its shape. tests/structure/builder.yaml asserts this label, so a
 # locally built image has to carry it exactly as a CI-built one does.
+# ONE QUERY PER NAME, not two fields per record. A description is free prose, so
+# it is the one field in this file where a folded or multi-line YAML scalar is
+# plausible - and yq -r emits that as several lines, which desyncs a
+# two-reads-per-record loop and pairs every later name with the wrong text. Six
+# queries cost milliseconds in a script that then runs docker build, and the
+# desync class disappears rather than being guarded.
+#
+# strenv() keyed by a name read_image_graph has already validated, so nothing is
+# interpolated into the expression (config.bats pins that rule).
+#
+# tr: an OCI label is single-line by definition, so a multi-line description
+# folds to spaces instead of producing a label the registry would reject.
 declare -A image_description=()
-while IFS= read -r name && IFS= read -r desc; do
-  [[ -z "$name" ]] && continue
-  image_description["$name"]="$desc"
-done < <(yq -r '
-  .images | to_entries | .[]
-  | [.key, (.value.description // "")]
-  | .[]' "$CONFIG")
+for name in "${IMAGE_NAMES[@]}"; do
+  image_description["$name"]="$(NAME="$name" "$YQ" -r \
+    '.images[strenv(NAME)].description // ""' "$CONFIG" | tr '\n' ' ')"
+  image_description["$name"]="${image_description[$name]% }"
+done
 
 # Ancestors first. read_image_graph has already rejected a dangling parent and a
 # cycle, so walking up cannot loop and cannot fall off the graph.

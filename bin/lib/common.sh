@@ -7,20 +7,48 @@
 # single source of truth.
 : "${CONFIG:=config/images.yml}"
 
-# Fail loudly if the wrong `yq` is on PATH. GitHub-hosted runners ship
-# mikefarah/yq (Go); kislyuk/yq is a Python wrapper around jq with an
-# incompatible syntax. Assert the flavour rather than producing confusing
-# downstream failures.
+# THE PINNED yq, resolved through the verified fetcher - not PATH. This is the
+# same change bin/structure-test.sh made for container-structure-test, and for a
+# stronger reason: yq decides the build matrix, the topological order, the uid and
+# gid baked into every image, the registry, the Debian suite, the OCI description
+# and the size budgets. It was pinned in tools.env by SHA-256 and then every
+# consumer used whatever copy the machine happened to have, with
+# require_mikefarah_yq checking the FLAVOUR and never the version. A GitHub
+# runner's preinstalled copy was a third version again.
+#
+# YQ= in the environment is the override seam - a consumer with their own verified
+# copy, or a test. Empty means "resolve through bin/fetch-tools.sh".
+#
+# The fetcher's own progress line is suppressed because this runs on every source,
+# including inside loops; a FAILURE is fatal and names the command that prints the
+# reason, so nothing is silently swallowed.
+: "${YQ:=}"
+if [[ -z "$YQ" ]]; then
+  if ! YQ="$("$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/fetch-tools.sh" --path yq 2>/dev/null)" ||
+    [[ -z "$YQ" ]]; then
+    echo "error: could not resolve the pinned yq through bin/fetch-tools.sh." >&2
+    echo "       run 'bin/fetch-tools.sh yq' to see why (network, checksum or arch)," >&2
+    echo "       or set YQ=/path/to/yq to use your own verified copy." >&2
+    exit 1
+  fi
+fi
+export YQ
+
+# Fail loudly if $YQ is the wrong yq. mikefarah/yq (Go) is what every expression
+# in this repository is written against; kislyuk/yq is a Python wrapper around jq
+# with an incompatible syntax. Assert the flavour rather than producing confusing
+# downstream failures - it still matters, because YQ= can point anywhere.
 require_mikefarah_yq() {
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "error: 'yq' not found. Install mikefarah/yq v4: https://github.com/mikefarah/yq" >&2
+  if ! command -v "$YQ" >/dev/null 2>&1; then
+    echo "error: '$YQ' not found. Run 'make tools', or set YQ=/path/to/yq" >&2
+    echo "       (mikefarah/yq v4: https://github.com/mikefarah/yq)" >&2
     exit 1
   fi
 
-  if ! yq --version 2>&1 | grep -qi mikefarah; then
-    echo "error: wrong 'yq' on PATH. This project requires mikefarah/yq v4 (Go)," >&2
+  if ! "$YQ" --version 2>&1 | grep -qi mikefarah; then
+    echo "error: '$YQ' is the wrong yq. This project requires mikefarah/yq v4 (Go)," >&2
     echo "       not kislyuk/yq (the Python jq wrapper); their syntaxes differ." >&2
-    echo "       found: $(yq --version 2>&1)" >&2
+    echo "       found: $("$YQ" --version 2>&1)" >&2
     exit 1
   fi
 }
@@ -86,6 +114,28 @@ read_image_graph() {
       echo "       names must match ^[a-z0-9]([a-z0-9-]*[a-z0-9])?\$" >&2
       exit 1
     fi
+    # THE VALUE SIDE OF THE ONE-FIELD-PER-LINE PROTOCOL. The four reads above are
+    # deliberate - see the @tsv discussion - but they assume no FIELD contains a
+    # newline. yq -r emits a multi-line scalar as several lines, which desyncs the
+    # read and shifts every subsequent value: silent graph corruption, not an
+    # error. A shape check on each field is what turns it into one.
+    #
+    # Both are repo-owned values with a narrow shape, so this costs nothing that
+    # a legitimate config would want.
+    if [[ -n "$dockerfile" && ! "$dockerfile" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+      echo "error: image '$name' has an invalid dockerfile path in $CONFIG" >&2
+      echo "       got: $(printf '%q' "$dockerfile")" >&2
+      echo "       paths must match ^[A-Za-z0-9._/-]+\$ (a newline in the value" >&2
+      echo "       desyncs the one-field-per-line read and shifts every value" >&2
+      echo "       after it)" >&2
+      exit 1
+    fi
+    if [[ -n "$platforms" && ! "$platforms" =~ ^[a-z0-9/,_-]+$ ]]; then
+      echo "error: image '$name' has an invalid platforms override in $CONFIG" >&2
+      echo "       got: $(printf '%q' "$platforms")" >&2
+      echo "       expected a comma-joined list like linux/amd64,linux/arm64" >&2
+      exit 1
+    fi
     IMAGE_NAMES+=("$name")
     IMAGE_PARENT["$name"]="$parent"
     # SC2034: shellcheck analyses one file at a time, so it cannot see that
@@ -96,7 +146,7 @@ read_image_graph() {
     IMAGE_DOCKERFILE["$name"]="$dockerfile"
     # shellcheck disable=SC2034
     IMAGE_PLATFORMS["$name"]="$platforms"
-  done < <(yq -r '
+  done < <("$YQ" -r '
     .images | to_entries | .[]
     | [.key, (.value.parent // ""), (.value.dockerfile // ""),
        (.value.platforms // [] | join(","))]

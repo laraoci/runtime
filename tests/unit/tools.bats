@@ -237,3 +237,86 @@ pin_for() {
     fi
   done
 }
+
+@test "tools: a cached tool with no verified stamp is re-fetched, not skipped" {
+  # THE FINDING. Presence was the whole test, and five of the seven tools have a
+  # runner path that does not carry the version - so `SHFMT_VERSION=9.99.9` +
+  # fetch-tools.sh printed "present, skipping" and kept v3.13.1. CI (cold cache)
+  # took the bump immediately and this machine never did, which is the
+  # local-vs-CI drift tools.env exists to prevent.
+  #
+  # ASSERTS THE ABSENCE OF THE SKIP, not a successful install: the fetch that
+  # follows needs the network, and what is being pinned here is that presence
+  # alone no longer satisfies the fast path.
+  # LARAOCI_TOOLS_DIR IS BIN_DIR ITSELF, not its parent (fetch-tools.sh:41), so
+  # a KIND=binary runner lands at $cache/shfmt - the same override
+  # tests/unit/tools.bats:195 already uses.
+  local cache
+  cache="$(mktemp -d)"
+  printf '#!/bin/sh\necho v0.0.0-stale\n' >"$cache/shfmt"
+  chmod +x "$cache/shfmt"
+
+  LARAOCI_TOOLS_DIR="$cache" run bin/fetch-tools.sh shfmt
+  if [[ "$output" == *"present, skipping"* ]]; then
+    echo "a stale cached binary with no stamp was reported present:" >&2
+    echo "$output" >&2
+  fi
+  [[ "$output" != *"present, skipping"* ]]
+  rm -rf "$cache"
+}
+
+@test "tools: a cached tool whose stamp matches the pin is not re-fetched" {
+  # The other half: the stamp must actually work as a fast path, or every make
+  # target re-downloads every tool on every invocation.
+  local cache arch sha
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=AMD64 ;;
+    aarch64 | arm64) arch=ARM64 ;;
+    *) skip "unsupported architecture $(uname -m)" ;;
+  esac
+  sha="$(pin_for SHFMT SHA256 "$arch")"
+  [ -n "$sha" ]
+
+  cache="$(mktemp -d)"
+  printf '#!/bin/sh\necho fake\n' >"$cache/shfmt"
+  chmod +x "$cache/shfmt"
+  printf '%s\n' "$sha" >"$cache/shfmt.sha256"
+
+  LARAOCI_TOOLS_DIR="$cache" run bin/fetch-tools.sh shfmt
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"present, skipping"* ]]
+  rm -rf "$cache"
+}
+
+@test "tools: no build script resolves yq through PATH (L5)" {
+  # yq is pinned in tools.env and was then taken from PATH by every consumer,
+  # which is the defect bin/structure-test.sh:169 already fixed for
+  # container-structure-test - after a comment explaining why PATH resolution is
+  # unacceptable for a tool that decides whether an image passes. yq decides
+  # more: the matrix, the build order, the uid/gid baked into the image, the
+  # registry, the Debian suite, the OCI description and the size budgets.
+  #
+  # The bats suites are deliberately out of scope: they read repository files, so
+  # a divergent yq there is a test error in front of the person running it rather
+  # than a wrongly built image.
+  # MATCHES COMMAND POSITION, not every occurrence of the word. The three shapes
+  # a bare invocation takes in this repository are `yq …` at the start of a
+  # command, `$(yq …)` / `< <(yq …)`, and `NAME=value yq …` - so the pattern is
+  # "a command separator, then any run of env assignments, then yq". Anchoring it
+  # that way is what keeps common.sh's own error messages ("mikefarah/yq v4",
+  # "set YQ=/path/to/yq") and its `fetch-tools.sh --path yq` argument out of the
+  # result: those are prose and an argument, and neither RUNS a yq off PATH.
+  # Verified against the pre-fix revision - it reports all 21 real call sites.
+  local f out bad=0
+  for f in bin/*.sh bin/lib/*.sh tests/smoke/run.sh; do
+    # Strip comments and the quoted "$YQ" form, then look for a bare invocation.
+    out="$(sed -E -e 's/#.*$//' -e 's/"\$YQ"/QQ/g' "$f" |
+      grep -nE '(^|[;&|(!])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*yq[[:space:]]' || true)"
+    if [[ -n "$out" ]]; then
+      echo "$f resolves yq through PATH:" >&2
+      echo "$out" >&2
+      bad=1
+    fi
+  done
+  [ "$bad" -eq 0 ]
+}

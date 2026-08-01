@@ -75,13 +75,13 @@ if [[ -z "$ref" ]]; then
   # The same two reads bin/build-chain.sh makes, so a locally built tag and the
   # ref tested here cannot disagree. A per-version `debian:` key overrides
   # defaults.debian (§3.1); an absent one falls back.
-  registry="$(yq -r '.defaults.registry' "$CONFIG")"
+  registry="$("$YQ" -r '.defaults.registry' "$CONFIG")"
   if [[ -z "$registry" || "$registry" == "null" ]]; then
     echo "error: $CONFIG does not define defaults.registry" >&2
     exit 1
   fi
 
-  default_debian="$(yq -r '.defaults.debian' "$CONFIG")"
+  default_debian="$("$YQ" -r '.defaults.debian' "$CONFIG")"
   declare -A php_debian=()
   supported_php=()
   while IFS= read -r v && IFS= read -r d; do
@@ -92,7 +92,7 @@ if [[ -z "$ref" ]]; then
     else
       php_debian["$v"]="$default_debian"
     fi
-  done < <(yq -r '
+  done < <("$YQ" -r '
     .php | to_entries | .[]
     | select(.value.status != "deprecated")
     | [.key, (.value.debian // "")]
@@ -101,7 +101,7 @@ if [[ -z "$ref" ]]; then
   # No --php means the version that backs :latest - the one a developer building
   # by hand is most likely to have in their daemon.
   if [[ -z "$php" ]]; then
-    php="$(yq -r '.php | to_entries | .[] | select(.value.default == true) | .key' "$CONFIG")"
+    php="$("$YQ" -r '.php | to_entries | .[] | select(.value.default == true) | .key' "$CONFIG")"
     if [[ -z "$php" || "$php" == "null" ]]; then
       echo "error: no PHP version carries 'default: true' in $CONFIG - pass --php" >&2
       exit 1

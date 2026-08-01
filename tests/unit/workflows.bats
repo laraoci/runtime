@@ -8,6 +8,11 @@ run_bodies() {
   yq -r '.jobs[].steps[] | select(has("run")) | .run' "$1"
 }
 
+hadolint_step() {
+  yq -r '.jobs[].steps[] | select((.run // "") | test("hadolint")) | .run' \
+    .github/workflows/lint.yml
+}
+
 @test "workflows: no GitHub expression is interpolated into a run: body (H1)" {
   local f out
   for f in .github/workflows/*.yml; do
@@ -232,4 +237,53 @@ run_bodies() {
       false
     }
   done
+}
+
+@test "workflows: every push-gated step in build.yml is recorded in docs/release-verification.md" {
+  # The artifact that gets PUBLISHED is the one artifact never verified: four
+  # steps are gated `!inputs.push`, and build.yml's own comment records that for
+  # the structure tests only. The label set, the STOPSIGNAL check and the size
+  # budget are in the identical position and were not named anywhere.
+  #
+  # STOPSIGNAL is the one that matters most: container-structure-test has no
+  # field for a stop signal, so the assertion that images/fpm restores SIGQUIT -
+  # without which every deploy truncates a response - exists ONLY in this
+  # workflow, and is skipped on exactly the builds that ship.
+  #
+  # Not a bug while nothing pushes (M4, D27). This is what stops it becoming one
+  # silently: a step that starts skipping the push path must be recorded there
+  # with the plan for it, or this goes red.
+  local names name
+  names="$(yq -r '.jobs.build.steps[]
+    | select((.if // "") | test("!inputs.push")) | .name' .github/workflows/build.yml)"
+  [ -n "$names" ]
+
+  while IFS= read -r name; do
+    [ -z "$name" ] && continue
+    grep -qF -- "$name" docs/release-verification.md || {
+      echo "build.yml skips '$name' on the push path" >&2
+      echo "and docs/release-verification.md does not mention it" >&2
+      false
+    }
+  done <<<"$names"
+}
+
+@test "workflows: CI and the Makefile select Dockerfiles the same way" {
+  # Two selectors for one job: `git ls-files '*Dockerfile' '*.Dockerfile'` in the
+  # Makefile, `find images tests` in lint.yml. Equivalent for today's tree, and
+  # they diverge for a Dockerfile outside images/ and tests/ (linted locally, not
+  # in CI) and for an untracked one (linted in CI, not locally). This repository's
+  # habit is one selector - and several CI-vs-Makefile equivalences above are
+  # already pinned here.
+  # COMMENTS STRIPPED, because the assertion is about the selector that RUNS,
+  # not about the words in the step. lint.yml's replacement comment names the
+  # `find images tests` form it replaced - which is the comment worth having,
+  # and it would otherwise fail this test for quoting the thing it warns about.
+  local live
+  live="$(hadolint_step | sed -E 's/^[[:space:]]*#.*$//')"
+  [[ "$live" == *"git ls-files"* ]]
+  [[ "$live" != *"find images tests"* ]]
+
+  run grep -c "git ls-files '\*Dockerfile' '\*.Dockerfile'" Makefile
+  [ "$output" -ge 1 ]
 }

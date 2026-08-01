@@ -30,4 +30,15 @@ ENV LARAOCI_DEFAULT_BINARY=php
 ENV PHP_MEMORY_LIMIT=512M \
     PHP_MAX_EXECUTION_TIME=0
 
+# RE-RENDER, because an ENV alone does not reach the file. runtime rendered
+# zz-laraoci.ini at build time from ITS values, so without this the shipped file
+# says 256M / 30 while this image declares 512M / 0 - and queue and scheduler
+# inherit that file. Normally invisible (the entrypoint overwrites it at start),
+# it is the whole configuration on the one path README.md:56 documents: a
+# read-only root filesystem, where nothing re-renders.
+#
+# Same one-line idiom as images/fpm/Dockerfile:114, and it runs as `laravel`
+# (inherited from runtime) against a file pre-created with that ownership.
+RUN /usr/local/bin/laraoci-entrypoint true
+
 CMD ["php", "artisan", "list"]

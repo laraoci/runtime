@@ -98,3 +98,25 @@ commandTests:
         /usr/local/bin/laraoci-entrypoint true >/dev/null 2>&1
         grep -E '^max_execution_time' /usr/local/etc/php/conf.d/zz-laraoci.ini
     expectedOutput: ['^max_execution_time = 0\n$']
+
+  # ------------------------------------------------------------------------
+  # THE SHIPPED FILE, rendered at BUILD time. No laraoci-entrypoint call, and
+  # that is the entire point: every assertion above renders first, so all of them
+  # passed on an image whose build-time ini still carried the PARENT's fpm-shaped
+  # values (256M / 30). Measured on cli, queue, scheduler and builder - all four
+  # shipped 256M while declaring 512M.
+  #
+  # It matters on the one path README.md:56 documents as supported: --read-only,
+  # where nothing re-renders at start. `docker run --read-only -e
+  # LARAOCI_ALLOW_UNWRITABLE_CONFIG=1 cli php -r 'echo ini_get("memory_limit");'`
+  # printed 256M.
+  # ------------------------------------------------------------------------
+  - name: shipped ini - memory_limit is cli's own default, not the parent's (§6.4)
+    command: grep
+    args: ["-E", "^memory_limit", "/usr/local/etc/php/conf.d/zz-laraoci.ini"]
+    expectedOutput: ['^memory_limit = 512M\n$']
+
+  - name: shipped ini - max_execution_time is cli's own default, not the parent's (§6.4)
+    command: grep
+    args: ["-E", "^max_execution_time", "/usr/local/etc/php/conf.d/zz-laraoci.ini"]
+    expectedOutput: ['^max_execution_time = 0\n$']

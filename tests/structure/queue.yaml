@@ -1,0 +1,103 @@
+schemaVersion: '2.0.0'
+
+# What `queue` adds to, or overrides in, the inherited contract. Everything
+# shared with the rest of the graph - user, workdir, entrypoint, the extension
+# set, pcntl/posix, the ImageMagick policy, Ghostscript's absence, the preload
+# script's presence - is asserted by tests/structure/_common.yaml, which
+# bin/structure-test.sh runs alongside this file ON THIS IMAGE'S OWN LEG. That
+# is why pcntl/posix are not restated here: the session brief asks for them to be
+# asserted on the images that actually run workers, and _common.yaml IS run
+# against queue, so they are. A second copy would be a second thing to drift.
+#
+# THE STOP SIGNAL IS NOT HERE, and cannot be: container-structure-test's
+# metadataTest schema has no field for it and a container cannot read its own.
+# `queue` inherits runtime's explicit STOPSIGNAL SIGTERM - which is CORRECT here,
+# the opposite of fpm - and .github/workflows/build.yml asserts the built image
+# against images.queue.stopsignal in config/images.yml, where an ABSENT key means
+# SIGTERM. So the assertion is delivered by images.yml carrying no stopsignal key
+# for this image. Do not add one, and do not re-declare STOPSIGNAL in the
+# Dockerfile: a re-declaration would pass this check while removing the evidence
+# that inheritance works.
+
+metadataTest:
+  # §7.5, exactly. --tries=3 bounds retries so a poison job lands in failed_jobs
+  # instead of looping; --max-time=3600 bounds worker lifetime so leaks and stale
+  # state never accumulate and the container restarts cleanly; --rest=0.1 yields
+  # the CPU between jobs; --no-interaction because a prompt in a container is a
+  # hung worker. --timeout is deliberately NOT set - Laravel's 60 s default is
+  # what the LOCI-039 grace-period warning is measured against.
+  cmd: ["php", "artisan", "queue:work", "--no-interaction", "--tries=3", "--max-time=3600", "--rest=0.1"]
+  envVars:
+    # 🧭 1 / D29. THE queue-specific fact. A queue worker is a long-lived CLI
+    # process: it compiles once and serves thousands of jobs from the warm
+    # segment, which is the one case where preload on CLI pays for itself. The
+    # flag alone does nothing - PHP_OPCACHE_PRELOAD is deliberately NOT defaulted
+    # here, so the image never attempts to preload a vendor tree it does not
+    # contain, and a one-off `artisan` command on this image pays nothing.
+    - key: LARAOCI_PRELOAD_FORCE
+      value: "1"
+    # Inherited from cli and asserted here because this image is what actually
+    # runs a worker: a dash-first argument must mean `php`, not `php-fpm`.
+    - key: LARAOCI_DEFAULT_BINARY
+      value: php
+    - key: PHP_MEMORY_LIMIT
+      value: 512M
+    - key: PHP_MAX_EXECUTION_TIME
+      value: "0"
+
+fileExistenceTests:
+  # D6. Inherited from cli, restated because `queue` runs application code and is
+  # a place someone would be tempted to add Composer "just for this one job".
+  - name: Composer is absent (D6)
+    path: /usr/local/bin/composer
+    shouldExist: false
+
+commandTests:
+  # ------------------------------------------------------------------------
+  # THE 🧭 1 / D29 PIN, and the exact mirror of cli.yaml's zero-byte assertion.
+  # There, PHP_OPCACHE_PRELOAD is set and the file stays EMPTY because `launched`
+  # is `php`. Here the same argv, the same variable and the same entrypoint must
+  # produce a NON-EMPTY file, because LARAOCI_PRELOAD_FORCE=1 opens the gate.
+  # The two tests together are what make the force flag a fact rather than an
+  # intention: delete the ENV and this fails; delete the gate and cli.yaml fails.
+  #
+  # container-structure-test runs commandTests WITHOUT the image ENTRYPOINT, so
+  # laraoci-entrypoint is invoked explicitly.
+  # ------------------------------------------------------------------------
+  - name: a named preload script IS enabled on this worker (🧭 1, D22)
+    command: sh
+    args:
+      - -c
+      - |
+        /usr/local/bin/laraoci-entrypoint true >/dev/null 2>&1
+        grep -c '^opcache.preload = /usr/local/share/laraoci/preload.php$' \
+          /usr/local/etc/php/conf.d/zz-laraoci-preload.ini
+    envVars:
+      - key: PHP_OPCACHE_PRELOAD
+        value: /usr/local/share/laraoci/preload.php
+    expectedOutput: ['^1\n$']
+
+  # The safe default. Without PHP_OPCACHE_PRELOAD the force flag must do NOTHING
+  # - this is the whole of why 🧭 1 chose (a) over (b), so it is asserted rather
+  # than assumed. The file is pre-created at build time and truncated when
+  # preload is off, so it always exists to measure.
+  - name: the force flag alone enables nothing (🧭 1 option (a))
+    command: sh
+    args:
+      - -c
+      - |
+        /usr/local/bin/laraoci-entrypoint true >/dev/null 2>&1
+        wc -c < /usr/local/etc/php/conf.d/zz-laraoci-preload.ini
+    expectedOutput: ['^ *0\n$']
+
+  - name: PHP_OPCACHE_PRELOAD is still unset by default (§6.4, 🧭 1)
+    command: sh
+    args: ["-c", "printenv PHP_OPCACHE_PRELOAD"]
+    exitCode: 1
+
+  # opcache in a long-lived CLI worker is the reason enable_cli = 1 exists
+  # (§6.5). Without it the force flag above would write a directive PHP ignores.
+  - name: opcache is enabled for the CLI SAPI (§6.5)
+    command: /usr/local/bin/laraoci-entrypoint
+    args: ["php", "-r", "echo ini_get('opcache.enable_cli') ? 'ON' : 'OFF';"]
+    expectedOutput: ['^ON$']

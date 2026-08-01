@@ -1,0 +1,16 @@
+# A dockerfile value that spans two lines. yq -r emits it as two lines, which
+# desyncs common.sh's four-reads-per-record loop and shifts every value after it.
+# The read protocol is deliberate (see the @tsv discussion in common.sh); this is
+# the value-side hole in it, and it corrupts the graph silently rather than
+# failing.
+version: 1
+defaults:
+  registry: ghcr.io/laraoci
+  platforms: [linux/amd64]
+  debian: trixie
+php:
+  "8.4": { status: supported, default: true }
+size_budgets: { runtime: 1 }
+images:
+  runtime:
+    dockerfile: "images/runtime/Dockerfile\nimages/evil/Dockerfile"

@@ -84,6 +84,9 @@ jobs:
       - name: hadolint
         run: |
           set -euo pipefail
-          find images tests \
-            \( -name 'Dockerfile' -o -name '*.Dockerfile' \) -print0 \
-            | xargs -0 -r hadolint
+          # THE SAME SELECTOR THE MAKEFILE USES. `find images tests` and
+          # `git ls-files` are equivalent for today's tree and diverge two ways:
+          # a Dockerfile outside images/ and tests/ is linted locally and not
+          # here, and an untracked one is linted here and not locally. One
+          # selector, pinned by tests/unit/workflows.bats.
+          git ls-files -z '*Dockerfile' '*.Dockerfile' | xargs -0 -r hadolint

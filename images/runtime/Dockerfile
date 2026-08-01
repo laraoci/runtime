@@ -179,6 +179,18 @@ RUN --mount=type=bind,source=config/imagemagick/policy.xml,target=/tmp/policy.xm
 COPY --chmod=0644 config/php/zz-laraoci.ini.template /usr/local/share/laraoci/templates/
 COPY --chmod=0755 bin/entrypoint.sh /usr/local/bin/laraoci-entrypoint
 
+# D30. The preload script belongs to RUNTIME - §7.1 lists it among what runtime
+# installs - so every image carries it INERT and only queue, via
+# LARAOCI_PRELOAD_FORCE=1, and fpm, via the D22 SAPI gate, ever activate it.
+# Copying it into `queue` alone would save ~2 KB on four images, split the
+# preload story across two Dockerfiles, and leave `fpm` - the DEFAULT preload
+# consumer - without the file it is documented to point at.
+#
+# /usr/local/share/laraoci already exists (RUN 2 creates it 0755), so BuildKit
+# creates no parent directory here and the --chmod trap recorded in RUN 2 does
+# not apply.
+COPY --chmod=0644 config/php/preload.php /usr/local/share/laraoci/preload.php
+
 # The §6.4 defaults live here and nowhere else: visible to `docker inspect`,
 # inherited by every descendant, and overridable per container. The entrypoint
 # reads them rather than carrying a second copy of the defaults.
@@ -187,8 +199,18 @@ COPY --chmod=0755 bin/entrypoint.sh /usr/local/bin/laraoci-entrypoint
 # and per 🧭 4 the entrypoint only honours it for FPM.
 # PHP_MEMORY_LIMIT / PHP_MAX_EXECUTION_TIME carry the FPM values; M2's cli image
 # overrides them to 512M / 0 (§6.4).
-# LARAOCI_PRELOAD_* are M3's (LOCI-035) - the preload script does not ship yet,
-# so setting them now would be inert configuration.
+# LARAOCI_PRELOAD_* are the preload script's CONTRACT (§6.4, LOCI-035). They are
+# inert on their own - nothing reads them unless PHP_OPCACHE_PRELOAD names the
+# script AND the D22 gate opens - and they are declared here rather than left to
+# preload.php's own getenv() fallbacks so `docker inspect` answers "what would
+# this preload?" without anyone reading a PHP file.
+#
+# LARAOCI_PRELOAD_PATHS REPLACES the list, it does not append to it. A consumer
+# who wants their own classes preloaded restates the defaults:
+#   LARAOCI_PRELOAD_PATHS=vendor/laravel/framework/src/Illuminate,vendor/composer,app
+# vendor/symfony stays out of the default (§7.7, reversing the v1 draft):
+# Illuminate already drags in the components it uses, the rest is preload memory
+# for no hit-rate gain and the largest source of benign "unlinked class" skips.
 #
 # thread=1 in the ImageMagick policy plus MAGICK_THREAD_LIMIT is a correctness
 # fix as much as a security one: OpenMP pools are per process, so twenty FPM
@@ -202,7 +224,10 @@ ENV PHP_MEMORY_LIMIT=256M \
     PHP_OPCACHE_MEMORY_CONSUMPTION=192 \
     PHP_OPCACHE_MAX_ACCELERATED_FILES=20000 \
     MAGICK_THREAD_LIMIT=1 \
-    MAGICK_TMPDIR=/tmp
+    MAGICK_TMPDIR=/tmp \
+    LARAOCI_PRELOAD_ROOT=/var/www/html \
+    LARAOCI_PRELOAD_PATHS=vendor/laravel/framework/src/Illuminate,vendor/composer \
+    LARAOCI_PRELOAD_IGNORE=/tests/,/Tests/,/stubs/,/Stubs/,/Testing/,/migrations/,/resources/,/Console/
 
 # 🧭 1 (M2). The single source of truth for what a dash-first argument means on
 # this image. laraoci-entrypoint reads it TWICE over - for the binary it
@@ -235,8 +260,20 @@ ENV LARAOCI_DEFAULT_BINARY=php-fpm
 # keeps the instruction pipe-free. Note the two shapes of a falsey boolean ini:
 # expose_php reads back as '' while opcache.validate_timestamps reads back as
 # '0', so both go through FILTER_VALIDATE_BOOLEAN instead of a string compare.
+#
+# `php -l` on the preload script is this repository's PHP quality gate. There is
+# no pint here and no PHP toolchain to hang one on, and adding one for a single
+# file is disproportionate. A parse check that runs on 8.3, 8.4 AND 8.5 at BUILD
+# time - so a syntax error is a red build rather than a container that refuses to
+# start - plus LOCI-038 exercising the script against a real vendor tree on all
+# three versions, is the stronger gate of the two.
+#
+# It matters more here than it looks: an uncaught error in a preload script
+# ABORTS PHP STARTUP (D32), so a typo in that file would take down every
+# container that enables preload, and the FPM master would refuse to start.
 # hadolint ignore=SC2016
 RUN set -eux; \
+    php -l /usr/local/share/laraoci/preload.php; \
     install -o "${USER_UID}" -g "${USER_GID}" -m 0644 /dev/null "${PHP_INI_DIR}/conf.d/zz-laraoci.ini"; \
     install -o "${USER_UID}" -g "${USER_GID}" -m 0644 /dev/null "${PHP_INI_DIR}/conf.d/zz-laraoci-preload.ini"; \
     /usr/local/bin/laraoci-entrypoint true; \
