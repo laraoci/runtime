@@ -28,6 +28,14 @@ ENV LARAOCI_DEFAULT_BINARY=php
 ENV PHP_MEMORY_LIMIT=512M \
     PHP_MAX_EXECUTION_TIME=0
 
+# RE-RENDER, for the reason images/cli/Dockerfile states - and here it is not
+# cosmetic: a builder stage on a read-only rootfs would run composer's solver
+# under the parent's 256 MB, which line 26 above says does not fit.
+#
+# Same one-line idiom as images/fpm/Dockerfile:114, and it runs as `laravel`
+# (inherited from runtime) against a file pre-created with that ownership.
+RUN /usr/local/bin/laraoci-entrypoint true
+
 # Both toolchains arrive as digest-pinned COPY --from - the mechanism runtime
 # already uses for install-php-extensions (D19). Multi-arch by construction,
 # no third-party apt repository, no `curl | sh`, and Renovate updates a digest.
