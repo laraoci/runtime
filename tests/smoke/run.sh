@@ -86,8 +86,25 @@ debian="$(PHP="$php" "$YQ" -r '.php[strenv(PHP)].debian // .defaults.debian' con
 project="laraoci-smoke-${php//./}"
 
 # One port per version, derived rather than fixed, so `run.sh --php 8.3` and
-# `run.sh --php 8.4` can run at the same time on one machine. 8.3 -> 18083.
-port="180${php//./}"
+# `run.sh --php 8.4` can run at the same time on one machine.
+#
+# INDEXED INTO config/images.yml, not stripped of its dot. `180${php//./}` gives
+# 18083/18084/18085 for today's three and then breaks its own shape: 1890 for a
+# future 9.0 (a different, lower port range) and 18810 for an 8.10. The index is
+# stable for any version string the config can hold, and the config is already
+# the source of truth for which versions exist.
+mapfile -t smoke_versions < <("$YQ" -r '.php | keys | .[]' config/images.yml)
+port=""
+for i in "${!smoke_versions[@]}"; do
+  if [[ "${smoke_versions[$i]}" == "$php" ]]; then
+    port=$((18081 + i))
+    break
+  fi
+done
+if [[ -z "$port" ]]; then
+  echo "error: PHP $php is not in config/images.yml's php map" >&2
+  exit 2
+fi
 
 export LARAOCI_REGISTRY="$registry"
 export LARAOCI_PHP="$php"
