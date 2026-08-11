@@ -536,3 +536,30 @@ hadolint_step() {
     false
   }
 }
+
+@test "workflows: a reusable workflow never keys anything on strategy.job-index" {
+  # `strategy` describes the job RUNNING the workflow, and inside a called
+  # workflow that is not the caller's matrix - job-index reads as 0 in every
+  # leg. build.yml named its digest artifact with it, so both platforms of an
+  # image x php uploaded under ONE name, download-artifact resolved that name to
+  # one artifact, and merge stopped with "expected 2 platform digests, found 1"
+  # with all 36 legs green. Measured on run 31481618763.
+  #
+  # Nothing else can catch this: the expression is valid, actionlint accepts it,
+  # and the damage appears in a different job. So it is banned outright in any
+  # workflow_call file - the platform or another real input is the honest key.
+  #
+  # Comments stripped: the upload step explains the trap by naming it, and a
+  # test that reads prose as if it were an expression fails on the documentation
+  # of the very thing it is asserting.
+  local f bad
+  for f in .github/workflows/*.yml; do
+    [ "$(yq -r '.on | has("workflow_call")' "$f")" = "true" ] || continue
+    bad="$(grep -n 'strategy\.job-index' "$f" | grep -vE '^[0-9]+: *#' || true)"
+    [ -z "$bad" ] || {
+      echo "$f is a reusable workflow and keys on strategy.job-index:" >&2
+      echo "$bad" >&2
+      false
+    }
+  done
+}

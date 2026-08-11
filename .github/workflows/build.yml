@@ -556,6 +556,7 @@ jobs:
           bin/size-check.sh --image "$IMAGE" --report | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Export the digest for the merge job
+        id: digest
         if: ${{ inputs.push }}
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -577,10 +578,26 @@ jobs:
           slug="$(printf '%s' "$PLATFORMS" | tr '/' '-')"
           touch "/tmp/digests/${slug}-${DIGEST#sha256:}"
 
+          # The ARTIFACT NAME needs the same slug, and this is the only place
+          # that can supply it - see the upload step below for why.
+          echo "slug=${slug}" >> "$GITHUB_OUTPUT"
+
+      # NAMED BY PLATFORM, NOT BY strategy.job-index. The index reads as `0` in
+      # EVERY leg here: `strategy` describes the job running the workflow, and
+      # inside a called workflow that is not the caller's matrix. So all six
+      # depth-0 legs uploaded `digests-runtime-<php>-0`, two legs per name, and
+      # download-artifact resolved each name to ONE artifact - the merge job saw
+      # a single platform and stopped with "expected 2 platform digests, found
+      # 1". Measured on run 31481618763, where every leg was green and the
+      # artifact list carried each name twice.
+      #
+      # The platform is the right key regardless: it is what makes the name
+      # unique, it is what the merge job selects on, and a missing arm64 leg now
+      # shows up as a missing arm64 ARTIFACT rather than as an off-by-one.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ inputs.push }}
         with:
-          name: digests-${{ inputs.image }}-${{ inputs.php }}-${{ strategy.job-index }}
+          name: digests-${{ inputs.image }}-${{ inputs.php }}-${{ steps.digest.outputs.slug }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
