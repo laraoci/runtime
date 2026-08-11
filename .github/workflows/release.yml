@@ -59,6 +59,13 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    # READ, NOT WRITE. This job publishes nothing - it resolves the dated suffix
+    # by asking the registry which dated tags already exist. Without a packages
+    # scope that question is answered with a 401 on every private package, and
+    # bin/next-dated-suffix.sh reads an unanswered question as "the tag is free".
+    permissions:
+      contents: read
+      packages: read
     outputs:
       dated_suffix: ${{ steps.suffix.outputs.dated_suffix }}
       registry: ${{ steps.ns.outputs.registry }}
@@ -403,6 +410,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # The published-artifact table inspects every dated manifest. Unlike
+      # prepare, this one fails loudly without the scope - a red notes job after
+      # a fully successful publish - but it fails all the same.
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

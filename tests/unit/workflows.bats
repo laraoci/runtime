@@ -563,3 +563,25 @@ hadolint_step() {
     }
   done
 }
+
+@test "workflows: every release job that logs in to GHCR declares a packages scope" {
+  # A job that logs in and then reads a manifest with packages: none gets a 401,
+  # and `imagetools inspect` reports a 401 the same way it reports a 404: exit 1.
+  # bin/next-dated-suffix.sh turns that into "the dated tag is free", which is how
+  # a release overwrites an immutable tag. The scope is the half of that fix that
+  # lives here.
+  local jobs job scope
+  jobs="$(yq -r '.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.uses // "") | test("docker/login-action"))] | length > 0)
+    | .key' .github/workflows/release.yml)"
+  [ -n "$jobs" ]
+  for job in $jobs; do
+    scope="$(JOB="$job" yq -r '.jobs[strenv(JOB)].permissions.packages // "ABSENT"' \
+      .github/workflows/release.yml)"
+    if [ "$scope" = "ABSENT" ]; then
+      echo "release.yml job '$job' logs in to GHCR but declares no packages scope." >&2
+      echo "A denied read is indistinguishable from a 404 - see bin/next-dated-suffix.sh." >&2
+      false
+    fi
+  done
+}
