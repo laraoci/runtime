@@ -459,10 +459,11 @@ Every published image carries an SPDX SBOM, SLSA provenance (`mode=max`), a
 Cosign keyless signature, and the full OCI label set. All four are verifiable
 from a terminal with nothing installed but `cosign`, `docker` and `jq`.
 
-**Every command below was executed against an image this pipeline published
-before it was written here.** A verify command that has never been run is worse
-than none: it teaches you a check that always fails, and you stop running checks.
-Substitute the tag you are actually pulling.
+**Every command below was executed against a real image this pipeline published
+before it was written here** - on a staging namespace, by the same workflows that
+publish production. A verify command that has never been run is worse than none:
+it teaches you a check that always fails, and you stop running checks. Substitute
+the tag you are actually pulling.
 
 ### Verify the signature
 
@@ -482,6 +483,13 @@ form exits 1.
 The regexp is anchored on `refs/tags/v` so only tag-built releases verify. An
 image built by a manual `workflow_dispatch` carries a branch ref instead and will
 **not** satisfy this command, deliberately: production images come from tags.
+
+That anchor is the one element here not yet exercised end to end. The signature,
+the issuer and the `merge.yml` subject were all verified against a real signature
+on a `workflow_dispatch` run, whose subject ends `@refs/heads/main`; the
+`refs/tags/v` form first runs for real on the first tagged release. `merge.yml`
+verifies its own signature in-job on every release, so a wrong subject fails in
+CI rather than in your terminal.
 
 Signing is recursive, so a per-platform digest is signed too - the same command
 against `runtime@sha256:<arch-specific digest>` verifies.
