@@ -1,4 +1,6 @@
 setup() {
+  PATH="$PWD/bin:$PATH"
+  export LARAOCI_TEST=1
   TMP="$(mktemp -d)"
   export TMP
   mkdir -p "$TMP/structure" "$TMP/bin"
@@ -110,4 +112,14 @@ teardown() {
 @test "structure-test: an unknown argument fails loudly" {
   run bin/structure-test.sh --image runtime --ref x --nope
   [ "$status" -eq 2 ]
+}
+
+@test "structure-test: the seam refuses to run outside a test" {
+  # LARAOCI_CST_CMD replaces the entire checker, so `LARAOCI_CST_CMD=true` makes
+  # all 35 structure assertions pass on both the PR and the push path. It is the
+  # strongest of the four seams and was the only one without the L6 guard.
+  unset LARAOCI_TEST
+  run bash -c "LARAOCI_CST_CMD=true structure-test.sh --image runtime"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"test-only seam"* ]]
 }
