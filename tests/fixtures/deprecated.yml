@@ -2,6 +2,7 @@ version: 1
 defaults:
   registry: ghcr.io/laraoci
   platforms: [linux/amd64, linux/arm64]
+  runners: { linux/amd64: ubuntu-24.04, linux/arm64: ubuntu-24.04-arm }
 php:
   "8.3": { status: supported }
   "8.4": { status: supported, default: true }

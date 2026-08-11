@@ -1,0 +1,22 @@
+# Suppressions for the release vulnerability gate (LOCI-044, §9.2).
+#
+# THE GATE IS ON FIXABLE CRITICAL AND HIGH, ANYWHERE IN THE IMAGE (🧭 3). It
+# does not exempt the upstream PHP base: the largest CVE surface here is
+# ImageMagick and its delegate stack, which LaraOCI installs itself (D13), and
+# --ignore-unfixed already handles the "upstream has no fix yet" case. What
+# remains is a fixable base CVE, and the control for that is §9.3's weekly
+# rebuild against a current base - not an exemption.
+#
+# So an entry here is an admission that a release is shipping with a known,
+# fixable CRITICAL or HIGH. That is sometimes the right call. It is never the
+# right call indefinitely, which is why:
+#
+#   EVERY ENTRY CARRIES AN EXPIRY DATE, and the release notes list the ones
+#   that were active for that release.
+#
+# Format (Trivy honours the `exp:` field):
+#
+#   CVE-2026-12345 exp:2026-09-01   # why, and what unblocks it
+#
+# There are deliberately no entries. An empty file with a policy is the
+# difference between a considered exception and a habit.

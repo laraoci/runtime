@@ -1,0 +1,469 @@
+name: release
+
+# §9.2. The first workflow in this repository that publishes anything, and the
+# reason M4 is different from every milestone before it: a published dated tag
+# is forever, and a half-updated rolling tag is worse than a failed release.
+#
+# SHAPE, because it is not obvious, and it is not arbitrary:
+#
+#   prepare -> build-d0 -> merge-d0 -> build-d1 -> merge-d1
+#           -> build-d2 -> merge-d2 -> release-required -> repoint -> notes
+#
+# Two things force it.
+#
+# 1. NATIVE ARM64 (D3a). No runner builds both platforms, so a leg builds ONE
+#    platform on ITS OWN hardware and pushes an untagged digest; merge assembles
+#    the manifest list. 36 build legs, 18 merge jobs.
+#
+# 2. THE PARENT PROBLEM. Every image below runtime begins FROM
+#    ghcr.io/laraoci/<parent>. Rolling tags do not move until the whole matrix
+#    passes (LOCI-046), so a child resolving `:8.4-trixie` on the push path
+#    would build against the PREVIOUS release. Children are therefore pinned to
+#    THIS release's immutable dated tag, and the stages exist to make that
+#    ordering real.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      registry_namespace:
+        description: >-
+          Override ghcr.io/laraoci for a dry run. 🚦 Gate 2 exercises the entire
+          release path against a throwaway namespace before a single real tag
+          is written; the input stays afterwards, because a staging release is
+          what should precede any risky change to this workflow.
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: >-
+          Skip the rolling-tag repoint. Dated tags are still written - they are
+          immutable and namespaced by the input above - but :latest and the
+          :8.x tags are left alone.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A second release run of the same ref would race the first over the same dated
+# tags. Queued, never cancelled: cancelling mid-publish is how a manifest list
+# ends up missing an architecture.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      dated_suffix: ${{ steps.suffix.outputs.dated_suffix }}
+      registry: ${{ steps.ns.outputs.registry }}
+      legs_d0: ${{ steps.legs.outputs.d0 }}
+      legs_d1: ${{ steps.legs.outputs.d1 }}
+      legs_d2: ${{ steps.legs.outputs.d2 }}
+      merge_d0: ${{ steps.legs.outputs.m0 }}
+      merge_d1: ${{ steps.legs.outputs.m1 }}
+      merge_d2: ${{ steps.legs.outputs.m2 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
+      - name: Resolve the registry namespace
+        id: ns
+        env:
+          OVERRIDE: ${{ inputs.registry_namespace }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          default="$(yq -r '.defaults.registry' config/images.yml)"
+          registry="$OVERRIDE"
+          if [ -z "$registry" ]; then
+            registry="$default"
+          fi
+
+          # A dry run that resolves to the PRODUCTION namespace is not a dry
+          # run. `dry_run` skips the repoint and nothing else: the 18 merge jobs
+          # still write IMMUTABLE dated tags and cosign still signs them. §8
+          # forbids overwriting a dated tag, so this cannot be undone by
+          # re-running - the namespace would carry a bogus release permanently.
+          #
+          # Blank is the dangerous value precisely because it is the DEFAULT of
+          # an optional field, so the failure mode is "forgot to type anything"
+          # rather than "typed the wrong thing". Refused here, in the first job,
+          # while zero legs have started and nothing has been published.
+          if [ "$DRY_RUN" = "true" ] && [ "$registry" = "$default" ]; then
+            echo "::error::dry_run=true but the namespace resolved to ${default} - refusing to publish" >&2
+            echo "       set registry_namespace to a throwaway, e.g. ghcr.io/<user>/laraoci-staging" >&2
+            exit 1
+          fi
+
+          echo "registry=${registry}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # THE ONLY CLOCK READ IN THIS WORKFLOW (🧭 2). 36 legs must agree on one
+      # dated tag; a per-leg read splits a release across a midnight boundary,
+      # and a per-job suffix probe splits it across a -2. One value, computed
+      # here, passed everywhere.
+      - name: Resolve this release's dated suffix
+        id: suffix
+        env:
+          LARAOCI_REGISTRY: ${{ steps.ns.outputs.registry }}
+        run: |
+          set -euo pipefail
+          today="$(date -u +%Y%m%d)"
+          suffix="$(bin/next-dated-suffix.sh --date "$today")"
+          echo "::notice::this release is ${suffix}"
+          echo "dated_suffix=${suffix}" >> "$GITHUB_OUTPUT"
+
+      # Six matrices from one script. The merge matrices are the build matrices
+      # sliced to a single platform: one platform slice of a depth IS the
+      # image x php set, so there is no second selector to keep in step.
+      - name: Build the staged matrices
+        id: legs
+        run: |
+          set -euo pipefail
+          {
+            echo "d0=$(bin/matrix.sh --depth 0)"
+            echo "d1=$(bin/matrix.sh --depth 1)"
+            echo "d2=$(bin/matrix.sh --depth 2)"
+            echo "m0=$(bin/matrix.sh --depth 0 --platform linux/amd64)"
+            echo "m1=$(bin/matrix.sh --depth 1 --platform linux/amd64)"
+            echo "m2=$(bin/matrix.sh --depth 2 --platform linux/amd64)"
+          } >> "$GITHUB_OUTPUT"
+
+  # --- depth 0: runtime -------------------------------------------------------
+
+  build-d0:
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.legs_d0) }}
+    uses: ./.github/workflows/build.yml
+    with:
+      php: ${{ matrix.php }}
+      image: ${{ matrix.image }}
+      platforms: ${{ matrix.platform }}
+      runner: ${{ matrix.runner }}
+      push: true
+      cache_mode: max
+      dockerfile: ${{ matrix.dockerfile }}
+      debian: ${{ matrix.debian }}
+      structure_test: true
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  merge-d0:
+    needs: [ prepare, build-d0 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.merge_d0) }}
+    uses: ./.github/workflows/merge.yml
+    with:
+      image: ${{ matrix.image }}
+      php: ${{ matrix.php }}
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  # --- depth 1: cli, fpm, builder --------------------------------------------
+
+  build-d1:
+    needs: [ prepare, merge-d0 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.legs_d1) }}
+    uses: ./.github/workflows/build.yml
+    with:
+      php: ${{ matrix.php }}
+      image: ${{ matrix.image }}
+      platforms: ${{ matrix.platform }}
+      runner: ${{ matrix.runner }}
+      push: true
+      cache_mode: max
+      dockerfile: ${{ matrix.dockerfile }}
+      debian: ${{ matrix.debian }}
+      structure_test: true
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  merge-d1:
+    needs: [ prepare, build-d1 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.merge_d1) }}
+    uses: ./.github/workflows/merge.yml
+    with:
+      image: ${{ matrix.image }}
+      php: ${{ matrix.php }}
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  # --- depth 2: queue, scheduler ---------------------------------------------
+
+  build-d2:
+    needs: [ prepare, merge-d1 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.legs_d2) }}
+    uses: ./.github/workflows/build.yml
+    with:
+      php: ${{ matrix.php }}
+      image: ${{ matrix.image }}
+      platforms: ${{ matrix.platform }}
+      runner: ${{ matrix.runner }}
+      push: true
+      cache_mode: max
+      dockerfile: ${{ matrix.dockerfile }}
+      debian: ${{ matrix.debian }}
+      structure_test: true
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  merge-d2:
+    needs: [ prepare, build-d2 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.merge_d2) }}
+    uses: ./.github/workflows/merge.yml
+    with:
+      image: ${{ matrix.image }}
+      php: ${{ matrix.php }}
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  # --- the gate, and the only irreversible job -------------------------------
+
+  # A stable, always-present check to gate everything irreversible on. Exactly
+  # the shape of pr-required and smoke-required, reached from the release side:
+  # branch protection and the repoint both require THIS name, never the volatile
+  # per-leg ones.
+  release-required:
+    name: release-required
+    needs: [ prepare, build-d0, merge-d0, build-d1, merge-d1, build-d2, merge-d2 ]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    env:
+      # Through env:, not interpolated into the run: body (H1). These are
+      # trusted result enums, but the rule is blunt on purpose.
+      R_PREPARE: ${{ needs.prepare.result }}
+      R_B0: ${{ needs.build-d0.result }}
+      R_M0: ${{ needs.merge-d0.result }}
+      R_B1: ${{ needs.build-d1.result }}
+      R_M1: ${{ needs.merge-d1.result }}
+      R_B2: ${{ needs.build-d2.result }}
+      R_M2: ${{ needs.merge-d2.result }}
+    steps:
+      - name: Verify every leg of the release succeeded
+        run: |
+          set -euo pipefail
+          # NO `skipped` allowance here, unlike pr-required. A skipped leg on a
+          # release is an image that was not published, and the rolling tags
+          # would then point at a set that is missing a member.
+          fail=0
+          for name in R_PREPARE R_B0 R_M0 R_B1 R_M1 R_B2 R_M2; do
+            result="${!name}"
+            echo "${name}=${result}"
+            [ "$result" = "success" ] || fail=1
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::the release matrix did not fully succeed - rolling tags will NOT be repointed" >&2
+            exit 1
+          fi
+
+  # THE ONLY JOB IN THIS REPOSITORY THAT MOVES A ROLLING TAG.
+  #
+  # Gated on the aggregate above, so a 36-leg matrix that lost one arm64
+  # `builder` leg leaves :8.4, :8.4-trixie and :latest exactly where they were.
+  # The dated tags from the successful legs remain published - they are
+  # immutable, and a missing one is a visible gap rather than a silent
+  # regression, which is the split §8 draws.
+  repoint:
+    needs: [ prepare, release-required ]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
+      # PHASE 1. Every dated tag this release wrote must resolve, before a
+      # single rolling tag moves. "All-or-none" cannot be atomic across 42
+      # registry writes - nothing at GHCR offers that - so the job removes
+      # every failure mode that is knowable in advance instead. The residual
+      # case is a registry rejecting a write mid-loop, which is loud and is
+      # fixed by re-running this job alone.
+      - name: Resolve every dated digest
+        id: resolve
+        env:
+          DATED_SUFFIX: ${{ needs.prepare.outputs.dated_suffix }}
+          LARAOCI_REGISTRY: ${{ needs.prepare.outputs.registry }}
+        run: |
+          set -euo pipefail
+          : > /tmp/repoint.tsv
+          missing=0
+          while IFS= read -r image; do
+            while IFS= read -r php; do
+              dated="$(bin/release-tags.sh --image "$image" --php "$php" \
+                --kind immutable --dated-suffix "$DATED_SUFFIX" | head -n1)"
+              if ! digest="$(docker buildx imagetools inspect "$dated" --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
+                echo "::error::${dated} does not resolve - refusing to move any rolling tag" >&2
+                missing=1
+                continue
+              fi
+              printf '%s\t%s\t%s\n' "$image" "$php" "$dated" >> /tmp/repoint.tsv
+              echo "${dated} -> ${digest}"
+            done < <(yq -r '.php | to_entries | .[] | select(.value.status != "deprecated") | .key' config/images.yml)
+          done < <(yq -r '.images | keys | .[]' config/images.yml)
+
+          [ "$missing" -eq 0 ] || exit 1
+          echo "resolved=$(wc -l < /tmp/repoint.tsv)" >> "$GITHUB_OUTPUT"
+
+      # PHASE 2. 42 rolling tags: 18 x (:8.x, :8.x-trixie) plus 6 x :latest.
+      - name: Move the rolling tags (§8, LOCI-046)
+        env:
+          LARAOCI_REGISTRY: ${{ needs.prepare.outputs.registry }}
+        run: |
+          set -euo pipefail
+          moved=0
+          while IFS=$'\t' read -r image php dated; do
+            tags=()
+            while IFS= read -r ref; do
+              [ -z "$ref" ] && continue
+              tags+=(-t "$ref")
+              moved=$((moved + 1))
+            done < <(bin/release-tags.sh --image "$image" --php "$php" --kind rolling)
+            # One create per image x php: imagetools takes every -t at once, so
+            # :8.4, :8.4-trixie and :latest move together for that image.
+            docker buildx imagetools create "${tags[@]}" "$dated"
+          done < /tmp/repoint.tsv
+          echo "::notice::repointed ${moved} rolling tags"
+
+  # --- the human-readable end of the release ---------------------------------
+
+  notes:
+    needs: [ prepare, release-required ]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
+      - name: Compose the published-artifact table
+        env:
+          DATED_SUFFIX: ${{ needs.prepare.outputs.dated_suffix }}
+          LARAOCI_REGISTRY: ${{ needs.prepare.outputs.registry }}
+        run: |
+          set -euo pipefail
+          # A release note that lists tags without digests is a list of names.
+          # §8 recommends digests for production, so the release that recommends
+          # it prints them.
+          {
+            echo "## Published images"
+            echo
+            echo "| Image | Tag | Digest |"
+            echo "|-------|-----|--------|"
+            while IFS= read -r image; do
+              while IFS= read -r php; do
+                dated="$(bin/release-tags.sh --image "$image" --php "$php" \
+                  --kind immutable --dated-suffix "$DATED_SUFFIX" | head -n1)"
+                digest="$(docker buildx imagetools inspect "$dated" --format '{{.Manifest.Digest}}')"
+                # shellcheck disable=SC2016  # the backticks are markdown code spans, not substitution
+                printf '| %s | `%s` | `%s` |\n' "$image" "${dated##*:}" "$digest"
+              done < <(yq -r '.php | to_entries | .[] | select(.value.status != "deprecated") | .key' config/images.yml)
+            done < <(yq -r '.images | keys | .[]' config/images.yml)
+            echo
+            echo "Verify any of them: see the supply-chain section of the README."
+            echo
+            echo "### Active vulnerability suppressions"
+            echo
+            if grep -qEv '^\s*(#|$)' .trivyignore; then
+              echo '```'
+              grep -Ev '^\s*(#|$)' .trivyignore
+              echo '```'
+            else
+              echo "None. The gate passed with no exceptions."
+            fi
+          } > /tmp/notes.md
+          cat /tmp/notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" --generate-notes --notes-file /tmp/notes.md \
+            || gh release edit "$TAG" --notes-file /tmp/notes.md

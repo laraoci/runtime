@@ -16,7 +16,13 @@ setup() {
   # Guards against a tool being dropped from iteration while its vars linger.
   # CONTAINER_STRUCTURE_TEST was absent from this list, which is why nothing
   # caught that it could not be fetched by name at all.
-  for t in SHFMT YQ HADOLINT ACTIONLINT BATS CONTAINER_STRUCTURE_TEST SHELLCHECK; do
+  #
+  # TRIVY and COSIGN are M4's two additions and belong here for exactly that
+  # reason: both are fetched BY NAME from a workflow (`fetch-tools.sh --dest ...
+  # trivy` / `... cosign`), so a pin that lingered while the name left
+  # LARAOCI_TOOLS would fail on the release path - the one path where a missing
+  # tool means an unsigned or unscanned published image.
+  for t in SHFMT YQ HADOLINT ACTIONLINT BATS CONTAINER_STRUCTURE_TEST SHELLCHECK TRIVY COSIGN; do
     case " $LARAOCI_TOOLS " in
       *" $t "*) : ;;
       *) echo "$t missing from LARAOCI_TOOLS" >&2; false ;;
@@ -226,10 +232,15 @@ pin_for() {
   #
   # The allowlist is actions that DO something (checkout, buildx, login, build),
   # as opposed to actions that INSTALL a tool tools.env should be pinning.
+  #
+  # download-artifact joins upload-artifact here for the same reason it was
+  # already allowed: it moves this workflow's OWN files between jobs. The
+  # release path's fan-in needs both halves, and pinning a GitHub-hosted
+  # artifact transport in tools.env is not a thing that can be done.
   local f out
   for f in .github/workflows/*.yml; do
     out="$(yq -r '.jobs[].steps[] | select(has("uses")) | .uses' "$f" 2>/dev/null |
-      grep -vE '^(actions/checkout|docker/setup-buildx-action|docker/login-action|docker/build-push-action)@' || true)"
+      grep -vE '^(actions/checkout|docker/setup-buildx-action|docker/login-action|docker/build-push-action|actions/upload-artifact|actions/download-artifact|github/codeql-action/upload-sarif)@' || true)"
     if [ -n "$out" ]; then
       echo "$f installs a tool through an action - pin it in tools.env instead:" >&2
       echo "$out" >&2

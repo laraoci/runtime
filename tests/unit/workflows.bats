@@ -240,19 +240,13 @@ hadolint_step() {
 }
 
 @test "workflows: every push-gated step in build.yml is recorded in docs/release-verification.md" {
-  # The artifact that gets PUBLISHED is the one artifact never verified: four
-  # steps are gated `!inputs.push`, and build.yml's own comment records that for
-  # the structure tests only. The label set, the STOPSIGNAL check and the size
-  # budget are in the identical position and were not named anywhere.
+  # The artifact that gets PUBLISHED was the one artifact never verified: five
+  # steps are gated `!inputs.push`, and build.yml's own comment recorded that
+  # for the structure tests only. The label set, the STOPSIGNAL check and the
+  # size budget were in the identical position and named nowhere.
   #
-  # STOPSIGNAL is the one that matters most: container-structure-test has no
-  # field for a stop signal, so the assertion that images/fpm restores SIGQUIT -
-  # without which every deploy truncates a response - exists ONLY in this
-  # workflow, and is skipped on exactly the builds that ship.
-  #
-  # Not a bug while nothing pushes (M4, D27). This is what stops it becoming one
-  # silently: a step that starts skipping the push path must be recorded there
-  # with the plan for it, or this goes red.
+  # A step that starts skipping the push path must be recorded there with the
+  # plan for it, or this goes red.
   local names name
   names="$(yq -r '.jobs.build.steps[]
     | select((.if // "") | test("!inputs.push")) | .name' .github/workflows/build.yml)"
@@ -266,6 +260,55 @@ hadolint_step() {
       false
     }
   done <<<"$names"
+}
+
+@test "workflows: every push-path step release-verification.md promises actually exists" {
+  # THE REVERSE DIRECTION, and the one that matters now. The test above cannot
+  # notice a Required row whose push-path twin was never built - which is
+  # exactly the failure this milestone is most likely to produce: a doc that
+  # claims the pushed digest is verified, and a workflow that does not verify
+  # it. Adding a verified step must genuinely SHRINK the unverified set.
+  #
+  # The doc carries the step names in one fenced ```text block; each must exist
+  # in build.yml gated ON the push path, not off it.
+  local names name count
+  names="$(sed -n '/^```text$/,/^```$/p' docs/release-verification.md | sed '1d;$d')"
+  [ -n "$names" ]
+
+  while IFS= read -r name; do
+    [ -z "$name" ] && continue
+    count="$(S="$name" yq -r '[.jobs.build.steps[]
+      | select(.name == strenv(S))
+      | select((.if // "") | test("inputs\\.push"))
+      | select((.if // "") | test("!inputs\\.push") | not)] | length' \
+      .github/workflows/build.yml)"
+    [ "$count" -ge 1 ] || {
+      echo "docs/release-verification.md promises a push-path step named:" >&2
+      echo "  $name" >&2
+      echo "and build.yml has no such step gated on inputs.push" >&2
+      false
+    }
+  done <<<"$names"
+}
+
+@test "workflows: the release path never measures size advisorily (§9.2, D17)" {
+  # --report exits 0 on an overrun. On the release path that is not a report,
+  # it is a budget that does not exist.
+  #
+  # Comments are stripped before the check: the step explains its own lack of
+  # --report in a comment, and a test that reads prose as if it were a command
+  # fails on the documentation of the very thing it is asserting.
+  local body
+  body="$(yq -r '.jobs.build.steps[]
+    | select((.if // "") | test("inputs\\.push"))
+    | select((.if // "") | test("!inputs\\.push") | not)
+    | select((.run // "") | test("size-check.sh"))
+    | .run' .github/workflows/build.yml)"
+  [ -n "$body" ]
+
+  body="$(printf '%s\n' "$body" | grep -v '^[[:space:]]*#' || true)"
+  [[ "$body" == *"size-check.sh"* ]]
+  [[ "$body" != *"--report"* ]]
 }
 
 @test "workflows: CI and the Makefile select Dockerfiles the same way" {
@@ -286,4 +329,185 @@ hadolint_step() {
 
   run grep -c "git ls-files '\*Dockerfile' '\*.Dockerfile'" Makefile
   [ "$output" -ge 1 ]
+}
+
+@test "workflows: the release build attaches an SBOM and max-mode provenance (§9.2, §11)" {
+  # mode=min is the BuildKit default and omits the Dockerfile, the build args
+  # and the source maps - the parts that make provenance answer "what actually
+  # went into this". §9.2 says max; a default that quietly degrades is the
+  # failure this pins.
+  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with.sbom' \
+    .github/workflows/build.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"inputs.push"* ]]
+
+  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with.provenance' \
+    .github/workflows/build.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mode=max"* ]]
+  [[ "$output" == *"inputs.push"* ]]
+}
+
+@test "workflows: the release scan is a hard gate on FIXABLE criticals (§9.2, 🧭 3)" {
+  # Two halves, both load-bearing. --exit-code 1 is what makes it a gate rather
+  # than a report. --ignore-unfixed is what stops an unfixable upstream CVE
+  # blocking every release forever - the gate is on what someone can act on.
+  run yq -r '.jobs.build.steps[]
+    | select((.run // "") | test("trivy image"))
+    | select((.if // "") | test("inputs\\.push"))
+    | select((.if // "") | test("!inputs\\.push") | not)
+    | .run' .github/workflows/build.yml
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [[ "$output" == *"--exit-code 1"* ]]
+  [[ "$output" == *"--ignore-unfixed"* ]]
+  [[ "$output" == *"CRITICAL,HIGH"* ]]
+}
+
+@test "workflows: the SARIF upload never runs on the PR path (H2)" {
+  # Uploading to code scanning needs security-events: write, and pr.yml is
+  # asserted to request no write permission at all. An ungated upload step
+  # would fail every PR - or, worse, force someone to widen pr.yml's token.
+  local gate
+  gate="$(yq -r '.jobs.build.steps[]
+    | select((.uses // "") | test("codeql-action/upload-sarif"))
+    | .if // "absent"' .github/workflows/build.yml)"
+  [ -n "$gate" ]
+  [[ "$gate" == *"inputs.push"* ]]
+  [[ "$gate" != *"!inputs.push"* ]]
+}
+
+@test "workflows: the release path stages builds by graph depth" {
+  # A child's FROM must resolve to THIS release's parent. Rolling tags do not
+  # move until the whole matrix has passed (LOCI-046), so a flat matrix would
+  # build cli against the PREVIOUS release's runtime - green, publishable, and
+  # not the thing that was tested.
+  run yq -r '.jobs."build-d1".needs | tostring' .github/workflows/release.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"merge-d0"* ]]
+  run yq -r '.jobs."build-d2".needs | tostring' .github/workflows/release.yml
+  [[ "$output" == *"merge-d1"* ]]
+}
+
+@test "workflows: exactly one job reads the clock (🧭 2)" {
+  # 36 legs must agree on the dated tag. Two clock reads is two dates.
+  run yq -r '[.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.run // "") | test("date -u"))] | length > 0)
+    | .key] | join(",")' .github/workflows/release.yml
+  [ "$status" -eq 0 ]
+  [ "$output" = "prepare" ]
+}
+
+@test "workflows: no release build leg fails fast" {
+  # fail-fast would cancel the other 35 legs on the first failure, hiding
+  # whether the break is version-specific or architecture-specific - which is
+  # the first question a red release raises, and the only one arm64 can answer.
+  local job
+  for job in build-d0 build-d1 build-d2; do
+    run yq -r ".jobs.\"$job\".strategy.\"fail-fast\"" .github/workflows/release.yml
+    [ "$output" = "false" ]
+  done
+}
+
+@test "workflows: the release grants the three tokens the push path needs" {
+  run yq -r '.jobs."build-d0".permissions | tostring' .github/workflows/release.yml
+  [[ "$output" == *"packages"* ]]
+  [[ "$output" == *"security-events"* ]]
+}
+
+@test "workflows: every published manifest list is signed, recursively (§11)" {
+  # -r signs each child manifest as well as the index. Without it a consumer
+  # who pins a per-platform digest - the supply-chain-strict path §8 recommends
+  # - finds no signature at all.
+  run yq -r '.jobs.merge.steps[] | select((.run // "") | test("cosign sign")) | .run' \
+    .github/workflows/merge.yml
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [[ "$output" == *"-r"* ]]
+  [[ "$output" == *"--yes"* ]]
+}
+
+@test "workflows: the signing job requests id-token: write" {
+  # Keyless signing IS the OIDC token. Without it cosign falls back to an
+  # interactive browser flow and the job hangs until it times out.
+  run yq -r '.jobs."merge-d0".permissions."id-token"' .github/workflows/release.yml
+  [ "$output" = "write" ]
+}
+
+@test "workflows: release-required aggregates EVERY build and merge job" {
+  # The same pattern as pr-required and smoke-required, reached from the
+  # release side. A job missing from `needs` is a leg whose failure cannot stop
+  # the repoint - which is the whole of LOCI-046.
+  local needs
+  needs="$(yq -r '.jobs."release-required".needs | join(",")' .github/workflows/release.yml)"
+  local job
+  for job in build-d0 merge-d0 build-d1 merge-d1 build-d2 merge-d2; do
+    [[ "$needs" == *"$job"* ]] || {
+      echo "release-required does not aggregate $job" >&2
+      false
+    }
+  done
+  run yq -r '.jobs."release-required".if' .github/workflows/release.yml
+  [[ "$output" == *"always()"* ]]
+}
+
+@test "workflows: nothing repoints a rolling tag before the whole matrix passes" {
+  # A rolling tag moved per-leg leaves :latest pointing at a runtime that built
+  # beside a queue that did not - a set nobody ever tested together.
+  run yq -r '.jobs.repoint.needs | join(",")' .github/workflows/release.yml
+  [[ "$output" == *"release-required"* ]]
+
+  # And it must be the ONLY job that asks for rolling tags.
+  run bash -c "yq -r '.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.run // \"\") | test(\"kind rolling\"))] | length > 0)
+    | .key' .github/workflows/release.yml"
+  [ "$output" = "repoint" ]
+}
+
+@test "workflows: the repoint resolves every dated digest before moving anything" {
+  # Phase 1 / phase 2. Every failure knowable in advance is discovered while
+  # zero rolling tags have moved.
+  run yq -r '[.jobs.repoint.steps[] | .name] | join("|")' .github/workflows/release.yml
+  [[ "$output" == *"Resolve"* ]]
+  [[ "$output" == *"Move"* ]]
+}
+
+@test "workflows: a dry run cannot resolve to the production namespace" {
+  # THE GATE 2 FOOTGUN. dry_run only skips the repoint - the 18 merge jobs still
+  # write IMMUTABLE dated tags and cosign still signs them. §8 forbids
+  # overwriting a dated tag, so a dispatch that left registry_namespace blank
+  # publishes a bogus release into ghcr.io/laraoci that CANNOT be cleaned up by
+  # re-running. The whole safety of a staging run rested on an operator
+  # remembering one optional text field.
+  #
+  # The refusal belongs in `prepare`, because that is the only place it can stop
+  # the run while zero legs have started.
+  run yq -r '.jobs.prepare.steps[] | select(.id == "ns") | .env | has("DRY_RUN")' \
+    .github/workflows/release.yml
+  [ "$status" -eq 0 ]
+  [ "$output" = "true" ]
+
+  # And it must REFUSE, not warn: a notice on a job that keeps going publishes
+  # exactly as much as no check at all.
+  run yq -r '.jobs.prepare.steps[] | select(.id == "ns") | .run' \
+    .github/workflows/release.yml
+  [[ "$output" == *"exit 1"* ]]
+}
+
+@test "workflows: every --ref argument is an expansion, never a literal" {
+  # `--ref "IMAGE_REF"` - one missing $ - reached the daemon as an image NAME
+  # and died with `repository name (library/IMAGE_REF) must be lowercase`, on
+  # the step that is the only place STOPSIGNAL is asserted.
+  #
+  # Neither linter can see it: a quoted bare word is a valid string to
+  # shellcheck, and actionlint does not know what --ref means. The reference
+  # arguments are the ones worth checking by hand, because every one of them
+  # names an image that a verification step is about to trust.
+  local bad
+  bad="$(grep -hoE -- '--ref [^ ]+' .github/workflows/*.yml | grep -vE -- '--ref "?\$' || true)"
+  [ -z "$bad" ] || {
+    echo "a --ref argument is a literal, not an expansion:" >&2
+    echo "$bad" >&2
+    false
+  }
 }

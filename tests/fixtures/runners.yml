@@ -1,0 +1,28 @@
+version: 1
+
+defaults:
+  registry: ghcr.io/laraoci
+  user:
+    name: laravel
+    uid: 1000
+    gid: 1000
+  workdir: /var/www/html
+  debian: trixie
+  platforms:
+    - linux/amd64
+    - linux/riscv64
+  runners:
+    linux/amd64: ubuntu-24.04
+
+php:
+  "8.4":
+    status: supported
+    default: true
+
+size_budgets:
+  runtime: 260
+
+images:
+  runtime:
+    dockerfile: images/runtime/Dockerfile
+    description: Fixture root.

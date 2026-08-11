@@ -113,3 +113,45 @@ setup() {
   [ "$status" -eq 2 ]
   [[ "$output" == *"no size budget"* ]]
 }
+
+@test "size-check: --ref measures exactly that reference (D17 on the push path)" {
+  # The release path measures the PUSHED DIGEST, which cannot be derived from
+  # config: it is whatever BuildKit produced. The seam echoes the ref it was
+  # handed so the test can prove the derivation was bypassed.
+  run bash -c "LARAOCI_TEST=1 LARAOCI_MEASURE_CMD='echo \$1 >&2; echo 1000000' \
+    bin/size-check.sh --image runtime --ref ghcr.io/laraoci/runtime@sha256:abc"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ghcr.io/laraoci/runtime@sha256:abc"* ]]
+}
+
+@test "size-check: --ref without --image is a usage error" {
+  # A digest identifies one image, so a ref with no image name has no budget to
+  # be measured against - and silently measuring all six against one ref would
+  # report five wrong rows.
+  run bash -c "bin/size-check.sh --ref ghcr.io/laraoci/runtime@sha256:abc"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--image"* ]]
+}
+
+@test "size-check: --ref is enforcing without --report (§9.2)" {
+  # 400 MB against runtime's 260 MB budget. The release path drops --report so
+  # an overrun exits 1 instead of printing a row nobody reads.
+  run bash -c "LARAOCI_TEST=1 LARAOCI_MEASURE_CMD='echo 400000000' \
+    bin/size-check.sh --image runtime --ref ghcr.io/laraoci/runtime@sha256:abc"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"OVER"* ]]
+}
+
+@test "size-check: --ref with --report stays advisory" {
+  run bash -c "LARAOCI_TEST=1 LARAOCI_MEASURE_CMD='echo 400000000' \
+    bin/size-check.sh --report --image runtime --ref ghcr.io/laraoci/runtime@sha256:abc"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OVER"* ]]
+}
+
+@test "size-check: --ref still validates the image against the budget set" {
+  run bash -c "LARAOCI_TEST=1 LARAOCI_MEASURE_CMD='echo 1000000' \
+    bin/size-check.sh --image nosuchimage --ref ghcr.io/laraoci/x@sha256:abc"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"no size budget"* ]]
+}
