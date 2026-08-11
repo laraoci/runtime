@@ -1,3 +1,8 @@
+# `run --separate-stderr` needs 1.5.0. tools.env pins bats at 1.14.0, so this is
+# satisfied by construction; declaring it is what silences BW02 and states the
+# floor for anyone running the suite under their own copy.
+bats_require_minimum_version 1.5.0
+
 setup() {
   PATH="$PWD/bin:$PATH"
   export LARAOCI_TEST=1
@@ -50,4 +55,32 @@ setup() {
   run bash -c "LARAOCI_TAG_EXISTS_CMD='exit 1' next-dated-suffix.sh --date 20260801"
   [ "$status" -eq 2 ]
   [[ "$output" == *"test-only seam"* ]]
+}
+
+@test "next-dated-suffix: an unanswerable probe stops the release, it does not guess" {
+  # Exit 2 from the seam means "I could not tell". The old code had no such
+  # state: every non-zero exit read as "free", so a 401 on a private package
+  # produced the bare suffix and the release overwrote an immutable dated tag.
+  #
+  # SPLIT STREAMS, deliberately. "No suffix was emitted" is a statement about
+  # STDOUT - that is the script's whole output contract, and the release reads it
+  # with `$(...)`. Asserting the date appears nowhere in the merged streams would
+  # be unsatisfiable: the error names the tag it could not read, and that tag
+  # ends in the date. An error message good enough to act on would fail the test.
+  run --separate-stderr bash -c \
+    "LARAOCI_TAG_EXISTS_CMD='exit 2' next-dated-suffix.sh --date 20260801"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"cannot determine"* ]]
+}
+
+@test "next-dated-suffix: an unanswerable probe on ONE tag stops the whole release" {
+  # Not "skip that one and carry on". A probe that cannot see part of the
+  # namespace cannot conclude anything about the suffix for any of it.
+  run --separate-stderr bash -c \
+    "LARAOCI_TAG_EXISTS_CMD='case \$1 in *scheduler:8.5-trixie-20260801) exit 2;; *) exit 1;; esac' \
+    next-dated-suffix.sh --date 20260801"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"scheduler:8.5-trixie-20260801"* ]]
 }
