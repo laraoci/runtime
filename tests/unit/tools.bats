@@ -226,10 +226,15 @@ pin_for() {
   #
   # The allowlist is actions that DO something (checkout, buildx, login, build),
   # as opposed to actions that INSTALL a tool tools.env should be pinning.
+  #
+  # download-artifact joins upload-artifact here for the same reason it was
+  # already allowed: it moves this workflow's OWN files between jobs. The
+  # release path's fan-in needs both halves, and pinning a GitHub-hosted
+  # artifact transport in tools.env is not a thing that can be done.
   local f out
   for f in .github/workflows/*.yml; do
     out="$(yq -r '.jobs[].steps[] | select(has("uses")) | .uses' "$f" 2>/dev/null |
-      grep -vE '^(actions/checkout|docker/setup-buildx-action|docker/login-action|docker/build-push-action|actions/upload-artifact|github/codeql-action/upload-sarif)@' || true)"
+      grep -vE '^(actions/checkout|docker/setup-buildx-action|docker/login-action|docker/build-push-action|actions/upload-artifact|actions/download-artifact|github/codeql-action/upload-sarif)@' || true)"
     if [ -n "$out" ]; then
       echo "$f installs a tool through an action - pin it in tools.env instead:" >&2
       echo "$out" >&2

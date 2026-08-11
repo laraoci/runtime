@@ -1,0 +1,254 @@
+name: release
+
+# §9.2. The first workflow in this repository that publishes anything, and the
+# reason M4 is different from every milestone before it: a published dated tag
+# is forever, and a half-updated rolling tag is worse than a failed release.
+#
+# SHAPE, because it is not obvious, and it is not arbitrary:
+#
+#   prepare -> build-d0 -> merge-d0 -> build-d1 -> merge-d1
+#           -> build-d2 -> merge-d2 -> release-required -> repoint -> notes
+#
+# Two things force it.
+#
+# 1. NATIVE ARM64 (D3a). No runner builds both platforms, so a leg builds ONE
+#    platform on ITS OWN hardware and pushes an untagged digest; merge assembles
+#    the manifest list. 36 build legs, 18 merge jobs.
+#
+# 2. THE PARENT PROBLEM. Every image below runtime begins FROM
+#    ghcr.io/laraoci/<parent>. Rolling tags do not move until the whole matrix
+#    passes (LOCI-046), so a child resolving `:8.4-trixie` on the push path
+#    would build against the PREVIOUS release. Children are therefore pinned to
+#    THIS release's immutable dated tag, and the stages exist to make that
+#    ordering real.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      registry_namespace:
+        description: >-
+          Override ghcr.io/laraoci for a dry run. 🚦 Gate 2 exercises the entire
+          release path against a throwaway namespace before a single real tag
+          is written; the input stays afterwards, because a staging release is
+          what should precede any risky change to this workflow.
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: >-
+          Skip the rolling-tag repoint. Dated tags are still written - they are
+          immutable and namespaced by the input above - but :latest and the
+          :8.x tags are left alone.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A second release run of the same ref would race the first over the same dated
+# tags. Queued, never cancelled: cancelling mid-publish is how a manifest list
+# ends up missing an architecture.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      dated_suffix: ${{ steps.suffix.outputs.dated_suffix }}
+      registry: ${{ steps.ns.outputs.registry }}
+      legs_d0: ${{ steps.legs.outputs.d0 }}
+      legs_d1: ${{ steps.legs.outputs.d1 }}
+      legs_d2: ${{ steps.legs.outputs.d2 }}
+      merge_d0: ${{ steps.legs.outputs.m0 }}
+      merge_d1: ${{ steps.legs.outputs.m1 }}
+      merge_d2: ${{ steps.legs.outputs.m2 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
+      - name: Resolve the registry namespace
+        id: ns
+        env:
+          OVERRIDE: ${{ inputs.registry_namespace }}
+        run: |
+          set -euo pipefail
+          registry="$OVERRIDE"
+          if [ -z "$registry" ]; then
+            registry="$(yq -r '.defaults.registry' config/images.yml)"
+          fi
+          echo "registry=${registry}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # THE ONLY CLOCK READ IN THIS WORKFLOW (🧭 2). 36 legs must agree on one
+      # dated tag; a per-leg read splits a release across a midnight boundary,
+      # and a per-job suffix probe splits it across a -2. One value, computed
+      # here, passed everywhere.
+      - name: Resolve this release's dated suffix
+        id: suffix
+        env:
+          LARAOCI_REGISTRY: ${{ steps.ns.outputs.registry }}
+        run: |
+          set -euo pipefail
+          today="$(date -u +%Y%m%d)"
+          suffix="$(bin/next-dated-suffix.sh --date "$today")"
+          echo "::notice::this release is ${suffix}"
+          echo "dated_suffix=${suffix}" >> "$GITHUB_OUTPUT"
+
+      # Six matrices from one script. The merge matrices are the build matrices
+      # sliced to a single platform: one platform slice of a depth IS the
+      # image x php set, so there is no second selector to keep in step.
+      - name: Build the staged matrices
+        id: legs
+        run: |
+          set -euo pipefail
+          {
+            echo "d0=$(bin/matrix.sh --depth 0)"
+            echo "d1=$(bin/matrix.sh --depth 1)"
+            echo "d2=$(bin/matrix.sh --depth 2)"
+            echo "m0=$(bin/matrix.sh --depth 0 --platform linux/amd64)"
+            echo "m1=$(bin/matrix.sh --depth 1 --platform linux/amd64)"
+            echo "m2=$(bin/matrix.sh --depth 2 --platform linux/amd64)"
+          } >> "$GITHUB_OUTPUT"
+
+  # --- depth 0: runtime -------------------------------------------------------
+
+  build-d0:
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.legs_d0) }}
+    uses: ./.github/workflows/build.yml
+    with:
+      php: ${{ matrix.php }}
+      image: ${{ matrix.image }}
+      platforms: ${{ matrix.platform }}
+      runner: ${{ matrix.runner }}
+      push: true
+      cache_mode: max
+      dockerfile: ${{ matrix.dockerfile }}
+      debian: ${{ matrix.debian }}
+      structure_test: true
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  merge-d0:
+    needs: [ prepare, build-d0 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.merge_d0) }}
+    uses: ./.github/workflows/merge.yml
+    with:
+      image: ${{ matrix.image }}
+      php: ${{ matrix.php }}
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  # --- depth 1: cli, fpm, builder --------------------------------------------
+
+  build-d1:
+    needs: [ prepare, merge-d0 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.legs_d1) }}
+    uses: ./.github/workflows/build.yml
+    with:
+      php: ${{ matrix.php }}
+      image: ${{ matrix.image }}
+      platforms: ${{ matrix.platform }}
+      runner: ${{ matrix.runner }}
+      push: true
+      cache_mode: max
+      dockerfile: ${{ matrix.dockerfile }}
+      debian: ${{ matrix.debian }}
+      structure_test: true
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  merge-d1:
+    needs: [ prepare, build-d1 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.merge_d1) }}
+    uses: ./.github/workflows/merge.yml
+    with:
+      image: ${{ matrix.image }}
+      php: ${{ matrix.php }}
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  # --- depth 2: queue, scheduler ---------------------------------------------
+
+  build-d2:
+    needs: [ prepare, merge-d1 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.legs_d2) }}
+    uses: ./.github/workflows/build.yml
+    with:
+      php: ${{ matrix.php }}
+      image: ${{ matrix.image }}
+      platforms: ${{ matrix.platform }}
+      runner: ${{ matrix.runner }}
+      push: true
+      cache_mode: max
+      dockerfile: ${{ matrix.dockerfile }}
+      debian: ${{ matrix.debian }}
+      structure_test: true
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  merge-d2:
+    needs: [ prepare, build-d2 ]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.merge_d2) }}
+    uses: ./.github/workflows/merge.yml
+    with:
+      image: ${{ matrix.image }}
+      php: ${{ matrix.php }}
+      dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
+      registry_namespace: ${{ needs.prepare.outputs.registry }}

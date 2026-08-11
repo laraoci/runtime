@@ -1,0 +1,153 @@
+name: merge
+
+# One image x php: combine the per-platform digests its build legs pushed into a
+# manifest list, tag it with the §8 IMMUTABLE forms, and sign it.
+#
+# The rolling forms are NOT written here (LOCI-046). They wait for the whole
+# matrix, in one job, all-or-none - because :latest pointing at a runtime that
+# built beside a queue that did not is a set no one ever tested together.
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        required: true
+        type: string
+      php:
+        required: true
+        type: string
+      dated_suffix:
+        required: true
+        type: string
+      registry_namespace:
+        required: true
+        type: string
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ inputs.image }}-${{ inputs.php }}-*
+          merge-multiple: true
+
+      - name: Assert every platform landed
+        env:
+          PLATFORM_COUNT: 2
+        run: |
+          set -euo pipefail
+          # A manifest list assembled from ONE digest is a single-arch image
+          # wearing a multi-arch name. The count is asserted before anything is
+          # tagged, because a dated tag is immutable and a wrong one is forever.
+          got="$(find /tmp/digests -type f | wc -l)"
+          if [ "$got" -ne "$PLATFORM_COUNT" ]; then
+            echo "::error::expected ${PLATFORM_COUNT} platform digests, found ${got}" >&2
+            find /tmp/digests -type f >&2
+            exit 1
+          fi
+
+      - name: Read the PHP patch version from the amd64 image (§8)
+        id: patch
+        env:
+          REGISTRY: ${{ inputs.registry_namespace }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          # The patch+dated tag needs a patch version, and guessing it is how a
+          # tag claims 8.4.10 for an image containing 8.4.11. So it is READ from
+          # the image - but from the amd64 one ONLY.
+          #
+          # This job runs on ubuntu-latest, so the arm64 digest cannot be
+          # EXECUTED here, and cross-running it under emulation to satisfy a tag
+          # is the thing D3a forbids. Nothing is lost: the arm64 leg already
+          # asserted its own org.opencontainers.image.version natively, on its
+          # own hardware, through bin/assert-metadata.sh - so the version is
+          # verified on both architectures without either being emulated.
+          #
+          # Which file is which comes from the NAME the build leg wrote
+          # (linux-<arch>-<digest>), not from probing: a merge job that had to
+          # execute an image to find out what it was could not tell the two
+          # apart in the one case that matters.
+          shopt -s nullglob
+          amd64=(/tmp/digests/linux-amd64-*)
+          shopt -u nullglob
+          if [ "${#amd64[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one linux-amd64 digest, found ${#amd64[@]}" >&2
+            find /tmp/digests -type f >&2
+            exit 1
+          fi
+
+          ref="${REGISTRY}/${IMAGE}@sha256:${amd64[0]##*-}"
+          patch="$(docker run --rm --entrypoint php "$ref" -r 'echo PHP_VERSION;')"
+          if [ -z "$patch" ]; then
+            echo "::error::${ref} reported no PHP_VERSION" >&2
+            exit 1
+          fi
+          echo "patch=${patch}" >> "$GITHUB_OUTPUT"
+
+      - name: Create the manifest list and write the immutable tags (§8)
+        id: create
+        env:
+          REGISTRY: ${{ inputs.registry_namespace }}
+          IMAGE: ${{ inputs.image }}
+          PHP: ${{ inputs.php }}
+          DATED_SUFFIX: ${{ inputs.dated_suffix }}
+          PATCH: ${{ steps.patch.outputs.patch }}
+          LARAOCI_REGISTRY: ${{ inputs.registry_namespace }}
+        run: |
+          set -euo pipefail
+          # imagetools create, NOT docker manifest create: the latter drops the
+          # SBOM and provenance attestations, which would make LOCI-042 a lie
+          # about every published manifest list.
+          #
+          # Immutable forms only. The rolling tags wait for the whole matrix
+          # (LOCI-046).
+          tags=()
+          while IFS= read -r ref; do
+            [ -z "$ref" ] && continue
+            tags+=(-t "$ref")
+          done < <(bin/release-tags.sh --image "$IMAGE" --php "$PHP" \
+            --kind immutable --dated-suffix "$DATED_SUFFIX" --patch "$PATCH")
+
+          sources=()
+          for f in /tmp/digests/*; do
+            sources+=("${REGISTRY}/${IMAGE}@sha256:${f##*-}")
+          done
+
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+          dated="${REGISTRY}/${IMAGE}:${PHP}-$(yq -r '.defaults.debian' config/images.yml)${DATED_SUFFIX}"
+          digest="$(docker buildx imagetools inspect "$dated" --format '{{.Manifest.Digest}}')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "dated=${dated}" >> "$GITHUB_OUTPUT"
+
+      - name: Assert the published manifest list carries both platforms
+        env:
+          DATED: ${{ steps.create.outputs.dated }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          # Finding 12, from the publishing end. A manifest list that lost an
+          # architecture is indistinguishable from a correct one at the tag - a
+          # consumer only discovers it on the platform that is missing.
+          bin/assert-metadata.sh --image "$IMAGE" --ref "$DATED" --source registry \
+            --platform linux/amd64 --platform linux/arm64

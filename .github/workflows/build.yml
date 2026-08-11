@@ -554,14 +554,23 @@ jobs:
         if: ${{ inputs.push }}
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
           # The merge job needs every platform digest for this image x php, and
           # a reusable workflow called in a matrix has ONE outputs object that
           # each leg overwrites. An artifact per leg is the only carrier that
           # survives the fan-in.
+          #
+          # The PLATFORM is in the FILE NAME, not just the content, because the
+          # merge job has to tell the digests apart: it can only `docker run`
+          # the one matching its own architecture (D3a forbids the emulation
+          # that would make the other executable). A bare digest name gives it
+          # no way to choose, and picking arbitrarily is how a tag claims a
+          # patch version read from the wrong architecture.
           mkdir -p /tmp/digests
-          touch "/tmp/digests/${DIGEST#sha256:}"
+          slug="$(printf '%s' "$PLATFORMS" | tr '/' '-')"
+          touch "/tmp/digests/${slug}-${DIGEST#sha256:}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ inputs.push }}

@@ -376,3 +376,41 @@ hadolint_step() {
   [[ "$gate" == *"inputs.push"* ]]
   [[ "$gate" != *"!inputs.push"* ]]
 }
+
+@test "workflows: the release path stages builds by graph depth" {
+  # A child's FROM must resolve to THIS release's parent. Rolling tags do not
+  # move until the whole matrix has passed (LOCI-046), so a flat matrix would
+  # build cli against the PREVIOUS release's runtime - green, publishable, and
+  # not the thing that was tested.
+  run yq -r '.jobs."build-d1".needs | tostring' .github/workflows/release.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"merge-d0"* ]]
+  run yq -r '.jobs."build-d2".needs | tostring' .github/workflows/release.yml
+  [[ "$output" == *"merge-d1"* ]]
+}
+
+@test "workflows: exactly one job reads the clock (🧭 2)" {
+  # 36 legs must agree on the dated tag. Two clock reads is two dates.
+  run yq -r '[.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.run // "") | test("date -u"))] | length > 0)
+    | .key] | join(",")' .github/workflows/release.yml
+  [ "$status" -eq 0 ]
+  [ "$output" = "prepare" ]
+}
+
+@test "workflows: no release build leg fails fast" {
+  # fail-fast would cancel the other 35 legs on the first failure, hiding
+  # whether the break is version-specific or architecture-specific - which is
+  # the first question a red release raises, and the only one arm64 can answer.
+  local job
+  for job in build-d0 build-d1 build-d2; do
+    run yq -r ".jobs.\"$job\".strategy.\"fail-fast\"" .github/workflows/release.yml
+    [ "$output" = "false" ]
+  done
+}
+
+@test "workflows: the release grants the three tokens the push path needs" {
+  run yq -r '.jobs."build-d0".permissions | tostring' .github/workflows/release.yml
+  [[ "$output" == *"packages"* ]]
+  [[ "$output" == *"security-events"* ]]
+}
