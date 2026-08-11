@@ -72,18 +72,29 @@ COPY --from=node:lts-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be1264261
 # anywhere, because `npm ci` is exactly the thing that extracts untrusted
 # tarballs (D26).
 #
-# Pinned to an exact version, and ordered AFTER the shims because it is invoked
-# through them. If a future npm moves npm-cli.js, the `npm --version` assertion
-# below fails the build here rather than shipping a broken shim.
+# PINNED BY CONTENT, not by version tag. Everything else this image consumes is
+# a @sha256: digest, and every tool in the repository is a SHA-256 in tools.env;
+# `npm install -g npm@12.0.2` was the one ingredient that resolved a name against
+# a registry at build time and trusted the answer. The tarball is fetched and
+# checked instead. The digest was verified against npm's own published
+# dist.integrity on 2026-08-11 - they agree.
+#
+# Bumping the version means replacing BOTH the URL and the SHA-256. A mismatch
+# fails the build here, which is the point.
 USER root
-# hadolint ignore=DL3008
+# hadolint ignore=DL3008,DL4006
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends git unzip; \
     rm -rf /var/lib/apt/lists/*; \
     ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
     ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
-    npm install -g npm@12.0.2; \
+    curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --max-time 120 \
+          https://registry.npmjs.org/npm/-/npm-12.0.2.tgz -o /tmp/npm.tgz; \
+    echo "5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1  /tmp/npm.tgz" \
+          | sha256sum -c -; \
+    npm install -g /tmp/npm.tgz; \
+    rm -f /tmp/npm.tgz; \
     install -d -o "${USER_UID}" -g "${USER_GID}" -m 0755 \
       "/home/${USER_NAME}/.composer" "/home/${USER_NAME}/.npm"; \
     composer --version; \
