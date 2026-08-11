@@ -433,3 +433,41 @@ hadolint_step() {
   run yq -r '.jobs."merge-d0".permissions."id-token"' .github/workflows/release.yml
   [ "$output" = "write" ]
 }
+
+@test "workflows: release-required aggregates EVERY build and merge job" {
+  # The same pattern as pr-required and smoke-required, reached from the
+  # release side. A job missing from `needs` is a leg whose failure cannot stop
+  # the repoint - which is the whole of LOCI-046.
+  local needs
+  needs="$(yq -r '.jobs."release-required".needs | join(",")' .github/workflows/release.yml)"
+  local job
+  for job in build-d0 merge-d0 build-d1 merge-d1 build-d2 merge-d2; do
+    [[ "$needs" == *"$job"* ]] || {
+      echo "release-required does not aggregate $job" >&2
+      false
+    }
+  done
+  run yq -r '.jobs."release-required".if' .github/workflows/release.yml
+  [[ "$output" == *"always()"* ]]
+}
+
+@test "workflows: nothing repoints a rolling tag before the whole matrix passes" {
+  # A rolling tag moved per-leg leaves :latest pointing at a runtime that built
+  # beside a queue that did not - a set nobody ever tested together.
+  run yq -r '.jobs.repoint.needs | join(",")' .github/workflows/release.yml
+  [[ "$output" == *"release-required"* ]]
+
+  # And it must be the ONLY job that asks for rolling tags.
+  run bash -c "yq -r '.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.run // \"\") | test(\"kind rolling\"))] | length > 0)
+    | .key' .github/workflows/release.yml"
+  [ "$output" = "repoint" ]
+}
+
+@test "workflows: the repoint resolves every dated digest before moving anything" {
+  # Phase 1 / phase 2. Every failure knowable in advance is discovered while
+  # zero rolling tags have moved.
+  run yq -r '[.jobs.repoint.steps[] | .name] | join("|")' .github/workflows/release.yml
+  [[ "$output" == *"Resolve"* ]]
+  [[ "$output" == *"Move"* ]]
+}

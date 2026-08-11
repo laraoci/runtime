@@ -252,3 +252,126 @@ jobs:
       php: ${{ matrix.php }}
       dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
       registry_namespace: ${{ needs.prepare.outputs.registry }}
+
+  # --- the gate, and the only irreversible job -------------------------------
+
+  # A stable, always-present check to gate everything irreversible on. Exactly
+  # the shape of pr-required and smoke-required, reached from the release side:
+  # branch protection and the repoint both require THIS name, never the volatile
+  # per-leg ones.
+  release-required:
+    name: release-required
+    needs: [ prepare, build-d0, merge-d0, build-d1, merge-d1, build-d2, merge-d2 ]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    env:
+      # Through env:, not interpolated into the run: body (H1). These are
+      # trusted result enums, but the rule is blunt on purpose.
+      R_PREPARE: ${{ needs.prepare.result }}
+      R_B0: ${{ needs.build-d0.result }}
+      R_M0: ${{ needs.merge-d0.result }}
+      R_B1: ${{ needs.build-d1.result }}
+      R_M1: ${{ needs.merge-d1.result }}
+      R_B2: ${{ needs.build-d2.result }}
+      R_M2: ${{ needs.merge-d2.result }}
+    steps:
+      - name: Verify every leg of the release succeeded
+        run: |
+          set -euo pipefail
+          # NO `skipped` allowance here, unlike pr-required. A skipped leg on a
+          # release is an image that was not published, and the rolling tags
+          # would then point at a set that is missing a member.
+          fail=0
+          for name in R_PREPARE R_B0 R_M0 R_B1 R_M1 R_B2 R_M2; do
+            result="${!name}"
+            echo "${name}=${result}"
+            [ "$result" = "success" ] || fail=1
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::the release matrix did not fully succeed - rolling tags will NOT be repointed" >&2
+            exit 1
+          fi
+
+  # THE ONLY JOB IN THIS REPOSITORY THAT MOVES A ROLLING TAG.
+  #
+  # Gated on the aggregate above, so a 36-leg matrix that lost one arm64
+  # `builder` leg leaves :8.4, :8.4-trixie and :latest exactly where they were.
+  # The dated tags from the successful legs remain published - they are
+  # immutable, and a missing one is a visible gap rather than a silent
+  # regression, which is the split §8 draws.
+  repoint:
+    needs: [ prepare, release-required ]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
+      # PHASE 1. Every dated tag this release wrote must resolve, before a
+      # single rolling tag moves. "All-or-none" cannot be atomic across 42
+      # registry writes - nothing at GHCR offers that - so the job removes
+      # every failure mode that is knowable in advance instead. The residual
+      # case is a registry rejecting a write mid-loop, which is loud and is
+      # fixed by re-running this job alone.
+      - name: Resolve every dated digest
+        id: resolve
+        env:
+          DATED_SUFFIX: ${{ needs.prepare.outputs.dated_suffix }}
+          LARAOCI_REGISTRY: ${{ needs.prepare.outputs.registry }}
+        run: |
+          set -euo pipefail
+          : > /tmp/repoint.tsv
+          missing=0
+          while IFS= read -r image; do
+            while IFS= read -r php; do
+              dated="$(bin/release-tags.sh --image "$image" --php "$php" \
+                --kind immutable --dated-suffix "$DATED_SUFFIX" | head -n1)"
+              if ! digest="$(docker buildx imagetools inspect "$dated" --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
+                echo "::error::${dated} does not resolve - refusing to move any rolling tag" >&2
+                missing=1
+                continue
+              fi
+              printf '%s\t%s\t%s\n' "$image" "$php" "$dated" >> /tmp/repoint.tsv
+              echo "${dated} -> ${digest}"
+            done < <(yq -r '.php | to_entries | .[] | select(.value.status != "deprecated") | .key' config/images.yml)
+          done < <(yq -r '.images | keys | .[]' config/images.yml)
+
+          [ "$missing" -eq 0 ] || exit 1
+          echo "resolved=$(wc -l < /tmp/repoint.tsv)" >> "$GITHUB_OUTPUT"
+
+      # PHASE 2. 42 rolling tags: 18 x (:8.x, :8.x-trixie) plus 6 x :latest.
+      - name: Move the rolling tags (§8, LOCI-046)
+        env:
+          LARAOCI_REGISTRY: ${{ needs.prepare.outputs.registry }}
+        run: |
+          set -euo pipefail
+          moved=0
+          while IFS=$'\t' read -r image php dated; do
+            tags=()
+            while IFS= read -r ref; do
+              [ -z "$ref" ] && continue
+              tags+=(-t "$ref")
+              moved=$((moved + 1))
+            done < <(bin/release-tags.sh --image "$image" --php "$php" --kind rolling)
+            # One create per image x php: imagetools takes every -t at once, so
+            # :8.4, :8.4-trixie and :latest move together for that image.
+            docker buildx imagetools create "${tags[@]}" "$dated"
+          done < /tmp/repoint.tsv
+          echo "::notice::repointed ${moved} rolling tags"
