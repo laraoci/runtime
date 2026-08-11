@@ -103,3 +103,13 @@ jobs:
           # here, and an untracked one is linted here and not locally. One
           # selector, pinned by tests/unit/workflows.bats.
           git ls-files -z '*Dockerfile' '*.Dockerfile' | xargs -0 -r hadolint
+      - name: Guard the ImageMagick policy against a backtick
+        run: |
+          set -euo pipefail
+          # A backtick makes ImageMagick's tokenizer swallow the rest of the file
+          # and load an EMPTY policy, which allows everything, silently. The
+          # build's live canary catches it eventually; this catches it in seconds.
+          if grep -q '`' config/imagemagick/policy.xml; then
+            echo "::error::config/imagemagick/policy.xml contains a backtick - it would load as an EMPTY policy"
+            exit 1
+          fi

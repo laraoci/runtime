@@ -44,10 +44,22 @@
 -->
 <policymap>
     <policy domain="delegate" rights="none" pattern="*"/>
-    <policy domain="coder" rights="none" pattern="{PS,PS2,PS3,EPS,PDF,XPS}"/>
-    <policy domain="coder" rights="none" pattern="{MSL,MVG,MSVG,SVG,MAGICK,TEXT,SHOW,WIN,PLT}"/>
-    <policy domain="coder" rights="none" pattern="{EPHEMERAL,INLINE,LABEL}"/>
-    <policy domain="coder" rights="none" pattern="{URL,HTTP,HTTPS,FTP}"/>
+
+    <!-- DEFAULT DENY, then name what this image is for. The enumerated form
+         this replaces listed the coders known to be dangerous, which means a
+         coder ImageMagick adds later - or one nobody thought of - was permitted
+         by default. LaraOCI's consumers process user uploads, which is the case
+         default-deny exists for.
+         The allowlist is exactly the raster formats a Laravel application
+         handles: images/runtime/Dockerfile asserts JPEG, PNG and WEBP survive
+         Imagick::queryFormats(), and the three below them are the remaining
+         formats a browser will produce from a file input.
+         The denials the build asserts live - PDF, MVG, TEXT, MSVG, SVG, INLINE,
+         LABEL - are now covered by the wildcard rather than by name, so that
+         assertion is what proves this rule is live. -->
+    <policy domain="coder" rights="none"       pattern="*"/>
+    <policy domain="coder" rights="read|write" pattern="{JPEG,JPG,PNG,GIF,WEBP,BMP,TIFF}"/>
+
     <policy domain="path"  rights="none" pattern="@*"/>
     <policy domain="resource" name="memory" value="256MiB"/>
     <policy domain="resource" name="map"    value="512MiB"/>

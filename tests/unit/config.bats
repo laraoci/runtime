@@ -83,3 +83,13 @@ setup() {
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "config: the ImageMagick policy contains no backtick" {
+  # policy.xml's own header: ImageMagick's policy reader is a hand-rolled
+  # tokenizer, not an XML parser. A backtick anywhere - including inside a
+  # comment - is read as a string delimiter, the rest of the file is swallowed,
+  # and an EMPTY policy loads. An empty policy allows everything, and nothing
+  # warns. The build's live canary catches it; this catches it sooner and free.
+  run grep -c '`' config/imagemagick/policy.xml
+  [ "$output" -eq 0 ]
+}
