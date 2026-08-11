@@ -375,3 +375,76 @@ jobs:
             docker buildx imagetools create "${tags[@]}" "$dated"
           done < /tmp/repoint.tsv
           echo "::notice::repointed ${moved} rolling tags"
+
+  # --- the human-readable end of the release ---------------------------------
+
+  notes:
+    needs: [ prepare, release-required ]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the pinned yq
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" yq
+
+      - name: Compose the published-artifact table
+        env:
+          DATED_SUFFIX: ${{ needs.prepare.outputs.dated_suffix }}
+          LARAOCI_REGISTRY: ${{ needs.prepare.outputs.registry }}
+        run: |
+          set -euo pipefail
+          # A release note that lists tags without digests is a list of names.
+          # §8 recommends digests for production, so the release that recommends
+          # it prints them.
+          {
+            echo "## Published images"
+            echo
+            echo "| Image | Tag | Digest |"
+            echo "|-------|-----|--------|"
+            while IFS= read -r image; do
+              while IFS= read -r php; do
+                dated="$(bin/release-tags.sh --image "$image" --php "$php" \
+                  --kind immutable --dated-suffix "$DATED_SUFFIX" | head -n1)"
+                digest="$(docker buildx imagetools inspect "$dated" --format '{{.Manifest.Digest}}')"
+                # shellcheck disable=SC2016  # the backticks are markdown code spans, not substitution
+                printf '| %s | `%s` | `%s` |\n' "$image" "${dated##*:}" "$digest"
+              done < <(yq -r '.php | to_entries | .[] | select(.value.status != "deprecated") | .key' config/images.yml)
+            done < <(yq -r '.images | keys | .[]' config/images.yml)
+            echo
+            echo "Verify any of them: see the supply-chain section of the README."
+            echo
+            echo "### Active vulnerability suppressions"
+            echo
+            if grep -qEv '^\s*(#|$)' .trivyignore; then
+              echo '```'
+              grep -Ev '^\s*(#|$)' .trivyignore
+              echo '```'
+            else
+              echo "None. The gate passed with no exceptions."
+            fi
+          } > /tmp/notes.md
+          cat /tmp/notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" --generate-notes --notes-file /tmp/notes.md \
+            || gh release edit "$TAG" --notes-file /tmp/notes.md
