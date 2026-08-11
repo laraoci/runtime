@@ -31,6 +31,10 @@ permissions:
 jobs:
   merge:
     runs-on: ubuntu-latest
+    # Pulls nothing large: assembles a manifest list, runs one image to read
+    # PHP_VERSION, signs, verifies. Minutes, not tens of minutes - unless
+    # Fulcio or Rekor is hanging, which is exactly what this bounds.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

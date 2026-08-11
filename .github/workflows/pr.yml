@@ -15,6 +15,7 @@ concurrency:
 jobs:
   matrix:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       legs: ${{ steps.gen.outputs.legs }}
       count: ${{ steps.gen.outputs.count }}
@@ -107,6 +108,7 @@ jobs:
     needs: [ matrix, build ]
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       # Passed through env: rather than interpolated into the run: body, per the
       # repo's H1 rule (no ${{ }} in shell). These are trusted result enums, but

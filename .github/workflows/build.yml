@@ -93,6 +93,10 @@ on:
 jobs:
   build:
     runs-on: ${{ inputs.runner }}
+    # Generous, because a cold arm64 PHP-extension build with no cache is slow,
+    # and finite, because this job runs 36 times per release inside a
+    # concurrency group that never cancels. The six-hour default is not a bound.
+    timeout-minutes: 90
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
       digest: ${{ steps.build.outputs.digest }}

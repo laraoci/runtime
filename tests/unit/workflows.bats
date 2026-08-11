@@ -670,3 +670,25 @@ hadolint_step() {
   mk="$(grep -c "git ls-files '\*.sh' '\*.bash'" Makefile || true)"
   [ "$mk" -eq 3 ]   # lint, fmt, fmt-fix
 }
+
+@test "workflows: every job that runs steps has a timeout" {
+  # smoke.yml already says why: "A hung `compose up --wait` would otherwise burn
+  # the job's full six-hour default before anyone learned the pool never went
+  # healthy." That argument is stronger on the release path - 36 build legs and
+  # 18 merge jobs, every one doing network work, inside a concurrency group that
+  # is deliberately cancel-in-progress: false.
+  #
+  # Jobs that only call a reusable workflow are excluded: the timeout belongs on
+  # the called job, not the caller.
+  local f out
+  for f in .github/workflows/*.yml; do
+    out="$(yq -r '.jobs | to_entries | .[]
+      | select(.value.uses == null)
+      | select(.value["timeout-minutes"] == null) | .key' "$f")"
+    if [ -n "$out" ]; then
+      echo "$f has jobs with no timeout-minutes:" >&2
+      echo "$out" >&2
+      false
+    fi
+  done
+}
