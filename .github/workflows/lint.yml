@@ -47,12 +47,18 @@ jobs:
       # tools.env's pin (1.7.7), so `make actions` and this job could disagree -
       # the exact drift tools.env exists to prevent, in the one shape the
       # "no unchecked tool" tests could not see.
-      - name: Install actionlint
+      - name: Install actionlint and the shellcheck it shells out to
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           bin/fetch-tools.sh --dest "$HOME/.local/bin" actionlint
+          # actionlint lints every run: body by invoking `shellcheck`, and treats
+          # a missing one as "skip the rule" without saying so. Pinning actionlint
+          # and then letting it use the runner's shellcheck leaves the actual
+          # shell linting unpinned - the same drift the comment above rejects the
+          # marketplace action for. tools.env already carries the pin.
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" shellcheck
       - name: actionlint
         run: |
           set -euo pipefail

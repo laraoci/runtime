@@ -644,3 +644,18 @@ hadolint_step() {
   [ "$status" -eq 0 ]
   [ "$output" -eq 0 ]
 }
+
+@test "workflows: the actionlint job installs the pinned shellcheck (L5)" {
+  # actionlint lints the shell inside every run: body by shelling out to
+  # shellcheck, and that binary is optional: absent, the rule is skipped in
+  # silence. The job installed actionlint alone, so it resolved shellcheck from
+  # the runner image - either not at all, leaving six workflows' run: bodies
+  # unlinted, or at whatever unpinned version GitHub ships. Both are the drift
+  # this job's own comment says it exists to prevent.
+  local install
+  install="$(yq -r '.jobs.actions.steps[] | select(has("run")) | .run' \
+    .github/workflows/lint.yml)"
+  [[ "$install" == *"fetch-tools.sh"* ]]
+  [[ "$install" == *"shellcheck"* ]]
+  [[ "$install" == *"actionlint"* ]]
+}
