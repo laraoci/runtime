@@ -620,3 +620,27 @@ hadolint_step() {
     false
   fi
 }
+
+@test "workflows: merge.yml takes its platform set from config, not a literal" {
+  # config/images.yml owns defaults.platforms, and bin/lib/common.sh reads and
+  # validates a per-image platforms: override that bin/matrix.sh honours.
+  # merge.yml hardcoded both the count (2) and the names, so a single-platform
+  # image would fail the merge on an immutable-tag boundary and a third platform
+  # would be published and then silently not asserted.
+  local bodies
+  bodies="$(run_bodies .github/workflows/merge.yml)"
+  if grep -qE '(--platform +linux/|PLATFORM_COUNT)' <<<"$bodies"; then
+    echo "merge.yml names a platform or a platform count literally:" >&2
+    grep -nE '(--platform +linux/|PLATFORM_COUNT)' <<<"$bodies" >&2
+    false
+  fi
+  # And it must actually ask matrix.sh instead.
+  [[ "$bodies" == *"bin/matrix.sh"* ]]
+}
+
+@test "workflows: merge.yml's PLATFORM_COUNT env literal is gone" {
+  run yq -r '[.jobs.merge.steps[] | select(.env.PLATFORM_COUNT != null)] | length' \
+    .github/workflows/merge.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 0 ]
+}

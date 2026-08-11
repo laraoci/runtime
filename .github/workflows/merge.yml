@@ -55,20 +55,39 @@ jobs:
           pattern: digests-${{ inputs.image }}-${{ inputs.php }}-*
           merge-multiple: true
 
-      - name: Assert every platform landed
+      - name: Resolve this image's platform set and assert every one landed
+        id: platforms
         env:
-          PLATFORM_COUNT: 2
+          IMAGE: ${{ inputs.image }}
+          PHP: ${{ inputs.php }}
         run: |
           set -euo pipefail
+          # THE COUNT COMES FROM THE CONFIG, not from a literal. config/images.yml
+          # owns defaults.platforms, and bin/lib/common.sh reads a per-image
+          # platforms: override that bin/matrix.sh honours - so an image that
+          # legitimately builds one platform, or a third platform added to the
+          # defaults, must not need an edit here. A hardcoded 2 fails the first
+          # case on an immutable-tag boundary and under-asserts the second.
+          mapfile -t want < <(bin/matrix.sh --image "$IMAGE" --php "$PHP" \
+            | jq -r '.include[].platform')
+          if [ "${#want[@]}" -eq 0 ]; then
+            echo "::error::bin/matrix.sh returned no platform for ${IMAGE} ${PHP}" >&2
+            exit 1
+          fi
+
           # A manifest list assembled from ONE digest is a single-arch image
-          # wearing a multi-arch name. The count is asserted before anything is
-          # tagged, because a dated tag is immutable and a wrong one is forever.
+          # wearing a multi-arch name. Asserted before anything is tagged,
+          # because a dated tag is immutable and a wrong one is forever.
           got="$(find /tmp/digests -type f | wc -l)"
-          if [ "$got" -ne "$PLATFORM_COUNT" ]; then
-            echo "::error::expected ${PLATFORM_COUNT} platform digests, found ${got}" >&2
+          if [ "$got" -ne "${#want[@]}" ]; then
+            echo "::error::expected ${#want[@]} platform digests (${want[*]}), found ${got}" >&2
             find /tmp/digests -type f >&2
             exit 1
           fi
+
+          # Passed to the next step as one space-separated line, so the
+          # assertion below names the same set this one counted.
+          echo "list=${want[*]}" >> "$GITHUB_OUTPUT"
 
       - name: Read the PHP patch version from the amd64 image (§8)
         id: patch
@@ -153,17 +172,25 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "dated=${dated}" >> "$GITHUB_OUTPUT"
 
-      - name: Assert the published manifest list carries both platforms
+      - name: Assert the published manifest list carries every platform
         env:
           DATED: ${{ steps.create.outputs.dated }}
           IMAGE: ${{ inputs.image }}
+          PLATFORMS: ${{ steps.platforms.outputs.list }}
         run: |
           set -euo pipefail
           # Finding 12, from the publishing end. A manifest list that lost an
           # architecture is indistinguishable from a correct one at the tag - a
           # consumer only discovers it on the platform that is missing.
+          #
+          # The set is the one the step above counted, so the count and the names
+          # cannot drift apart.
+          args=()
+          for p in $PLATFORMS; do
+            args+=(--platform "$p")
+          done
           bin/assert-metadata.sh --image "$IMAGE" --ref "$DATED" --source registry \
-            --platform linux/amd64 --platform linux/arm64
+            "${args[@]}"
 
       - name: Install the pinned cosign
         run: |
