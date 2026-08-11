@@ -471,3 +471,25 @@ hadolint_step() {
   [[ "$output" == *"Resolve"* ]]
   [[ "$output" == *"Move"* ]]
 }
+
+@test "workflows: a dry run cannot resolve to the production namespace" {
+  # THE GATE 2 FOOTGUN. dry_run only skips the repoint - the 18 merge jobs still
+  # write IMMUTABLE dated tags and cosign still signs them. §8 forbids
+  # overwriting a dated tag, so a dispatch that left registry_namespace blank
+  # publishes a bogus release into ghcr.io/laraoci that CANNOT be cleaned up by
+  # re-running. The whole safety of a staging run rested on an operator
+  # remembering one optional text field.
+  #
+  # The refusal belongs in `prepare`, because that is the only place it can stop
+  # the run while zero legs have started.
+  run yq -r '.jobs.prepare.steps[] | select(.id == "ns") | .env | has("DRY_RUN")' \
+    .github/workflows/release.yml
+  [ "$status" -eq 0 ]
+  [ "$output" = "true" ]
+
+  # And it must REFUSE, not warn: a notice on a job that keeps going publishes
+  # exactly as much as no check at all.
+  run yq -r '.jobs.prepare.steps[] | select(.id == "ns") | .run' \
+    .github/workflows/release.yml
+  [[ "$output" == *"exit 1"* ]]
+}

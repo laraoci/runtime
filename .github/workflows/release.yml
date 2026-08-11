@@ -82,12 +82,31 @@ jobs:
         id: ns
         env:
           OVERRIDE: ${{ inputs.registry_namespace }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
+          default="$(yq -r '.defaults.registry' config/images.yml)"
           registry="$OVERRIDE"
           if [ -z "$registry" ]; then
-            registry="$(yq -r '.defaults.registry' config/images.yml)"
+            registry="$default"
           fi
+
+          # A dry run that resolves to the PRODUCTION namespace is not a dry
+          # run. `dry_run` skips the repoint and nothing else: the 18 merge jobs
+          # still write IMMUTABLE dated tags and cosign still signs them. §8
+          # forbids overwriting a dated tag, so this cannot be undone by
+          # re-running - the namespace would carry a bogus release permanently.
+          #
+          # Blank is the dangerous value precisely because it is the DEFAULT of
+          # an optional field, so the failure mode is "forgot to type anything"
+          # rather than "typed the wrong thing". Refused here, in the first job,
+          # while zero legs have started and nothing has been published.
+          if [ "$DRY_RUN" = "true" ] && [ "$registry" = "$default" ]; then
+            echo "::error::dry_run=true but the namespace resolved to ${default} - refusing to publish" >&2
+            echo "       set registry_namespace to a throwaway, e.g. ghcr.io/<user>/laraoci-staging" >&2
+            exit 1
+          fi
+
           echo "registry=${registry}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
