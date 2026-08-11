@@ -110,9 +110,38 @@ RUN set -eux; \
 USER ${USER_NAME}
 
 # Part of the runtime contract (§7.4): these paths are documented so a consumer
-# can mount BuildKit caches onto them. COMPOSER_ALLOW_SUPERUSER=0 is explicit
-# rather than assumed - it is what makes composer refuse to run as root quietly
-# instead of warning on every invocation if someone builds with --user 0.
+# can mount BuildKit caches onto them.
+#
+# COMPOSER_ALLOW_SUPERUSER=0 IS INERT, TWICE OVER. It is kept, and said out loud
+# here, so nobody has to measure it again to find that out. Read from Composer
+# 2.10.2's own Console/Application.php:
+#
+#   $needsSudoCheck = !Platform::isWindows()
+#     && function_exists('exec')
+#     && !Platform::getEnv('COMPOSER_ALLOW_SUPERUSER')
+#     && !Platform::isDocker();
+#
+# 1. TRUTHINESS, NOT isset. getenv() returns the string "0", which is falsy in
+#    PHP, so `!getEnv(...)` is true and the conjunct passes exactly as it does
+#    with the variable unset. Measured: var_dump gives string(1) "0" then
+#    bool(false) - the same bool(false) an unset variable gives. Setting it to 0
+#    and not setting it at all are the same thing.
+#
+# 2. AND IT COULD NEVER MATTER IN THIS IMAGE ANYWAY. Platform::isDocker() is
+#    true whenever /.dockerenv exists, which is every container these images run
+#    in, so $needsSudoCheck is false regardless of the variable and the root
+#    check is skipped entirely. Measured both ways - as `--user 0` with the
+#    variable at 0 and with it unset, `composer install` printed no root notice
+#    in either case.
+#
+# And what the flag gates when it IS reached - a root invocation outside a
+# container - is a WARNING plus an interactive "Continue as root/super user?"
+# prompt, plus plugin disabling in a non-interactive session. Not a refusal.
+# This comment previously claimed it made composer refuse; it never did.
+#
+# Kept rather than deleted because tests/structure/builder.yaml pins the ENV as
+# part of the documented interface, and because a reader who knows the variable
+# exists is better served by finding it with this note than by not finding it.
 ENV COMPOSER_HOME=/home/${USER_NAME}/.composer \
     COMPOSER_ALLOW_SUPERUSER=0 \
     NPM_CONFIG_CACHE=/home/${USER_NAME}/.npm \
