@@ -600,3 +600,23 @@ hadolint_step() {
   [[ "$install" == *"inputs.structure_test"* ]]
   [[ "$install" == *"||"* ]]
 }
+
+@test "workflows: merge.yml never re-derives a tag from defaults.debian" {
+  # release-tags.sh resolves the suite as "per-version debian: override, falling
+  # back to defaults.debian" (§3.1). merge.yml reconstructed the dated tag by
+  # reading defaults.debian directly, so the two agree only while no version
+  # carries an override - the transition mechanism the override exists for.
+  #
+  # COMMENT LINES ARE EXEMPT, the same exemption bin/entrypoint.sh:64 makes and
+  # for the same reason: the comment that explains why the code no longer
+  # derives a suite this way has to name the thing it no longer does. Without
+  # the exemption this test forbids its own justification, and the way to make
+  # it pass is to delete the explanation - which is the opposite of the point.
+  local bodies
+  bodies="$(run_bodies .github/workflows/merge.yml | sed -e '/^[[:space:]]*#/d')"
+  if grep -q 'defaults\.debian' <<<"$bodies"; then
+    echo "merge.yml derives a suite from defaults.debian; use bin/release-tags.sh:" >&2
+    grep -n 'defaults\.debian' <<<"$bodies" >&2
+    false
+  fi
+}

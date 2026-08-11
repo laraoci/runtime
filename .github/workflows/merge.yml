@@ -140,7 +140,15 @@ jobs:
 
           docker buildx imagetools create "${tags[@]}" "${sources[@]}"
 
-          dated="${REGISTRY}/${IMAGE}:${PHP}-$(yq -r '.defaults.debian' config/images.yml)${DATED_SUFFIX}"
+          # THE SAME SOURCE THE TAGS CAME FROM, three lines above. Rebuilding the
+          # string from defaults.debian is a second derivation of a value
+          # bin/release-tags.sh already produced, and the two disagree the moment
+          # a PHP version carries a `debian:` override (§3.1) - which is the one
+          # circumstance in which you would least want the release path to
+          # disagree with itself. head -n1 takes the php-suite-dated form; the
+          # patch+dated form is the second line.
+          dated="$(bin/release-tags.sh --image "$IMAGE" --php "$PHP" \
+            --kind immutable --dated-suffix "$DATED_SUFFIX" | head -n1)"
           digest="$(docker buildx imagetools inspect "$dated" --format '{{.Manifest.Digest}}')"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "dated=${dated}" >> "$GITHUB_OUTPUT"
