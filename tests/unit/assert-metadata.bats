@@ -138,3 +138,26 @@ index_config() {
   run assert-metadata.sh --image fpm
   [ "$status" -eq 2 ]
 }
+
+# THE PUSH-PATH COMBINATION. Every leg pushes ONE platform by digest, then
+# asserts that digest names the platform the leg was told to build. The suite
+# covered single-platform-without-a-platform-filter and list-with-one, but never
+# this pair, so the normalisation could key a lone config by its REF instead of
+# its platform and nothing noticed until a release leg ran.
+@test "assert-metadata: a single-platform digest satisfies --platform for its own arch" {
+  export LARAOCI_INSPECT_CMD="$(declare -f single_config); single_config"
+  run assert-metadata.sh --image fpm --ref ghcr.io/laraoci/fpm@sha256:aaa \
+    --source registry --platform linux/arm64
+  [ "$status" -eq 0 ]
+}
+
+@test "assert-metadata: a single-platform digest fails --platform for the OTHER arch" {
+  # The arm64 leg asserting linux/amd64 must be an error, not a pass. This is
+  # finding 12 at the per-leg level: a leg that verified the wrong architecture
+  # would report green for an image it never looked at.
+  export LARAOCI_INSPECT_CMD="$(declare -f single_config); single_config"
+  run assert-metadata.sh --image fpm --ref ghcr.io/laraoci/fpm@sha256:aaa \
+    --source registry --platform linux/amd64
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"carries no linux/amd64"* ]]
+}

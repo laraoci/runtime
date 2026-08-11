@@ -129,7 +129,15 @@ configs="$(jq -c --arg ref "$ref" '
   if has("Labels") or has("StopSignal") or has("Cmd") or has("Env") then
     {($ref): {config: .}}
   elif has("config") then
-    {($ref): .}
+    # Keyed by the platform the config DECLARES, not by the ref. Every release
+    # leg pushes one platform by digest and then asserts that digest carries the
+    # platform it was told to build - so a lone config keyed by its reference
+    # could never satisfy --platform, and the push path failed with "carries no
+    # linux/amd64 manifest" against an image that was linux/amd64.
+    #
+    # No variant in the key: the matrix speaks in `linux/arm64`, while a config
+    # may also carry variant v8, and `linux/arm64/v8` would miss just as badly.
+    {("\(.os)/\(.architecture)"): .}
   else
     with_entries(select(.key | test("^unknown/") | not))
   end' <<<"$raw")"
