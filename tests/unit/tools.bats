@@ -16,7 +16,13 @@ setup() {
   # Guards against a tool being dropped from iteration while its vars linger.
   # CONTAINER_STRUCTURE_TEST was absent from this list, which is why nothing
   # caught that it could not be fetched by name at all.
-  for t in SHFMT YQ HADOLINT ACTIONLINT BATS CONTAINER_STRUCTURE_TEST SHELLCHECK; do
+  #
+  # TRIVY and COSIGN are M4's two additions and belong here for exactly that
+  # reason: both are fetched BY NAME from a workflow (`fetch-tools.sh --dest ...
+  # trivy` / `... cosign`), so a pin that lingered while the name left
+  # LARAOCI_TOOLS would fail on the release path - the one path where a missing
+  # tool means an unsigned or unscanned published image.
+  for t in SHFMT YQ HADOLINT ACTIONLINT BATS CONTAINER_STRUCTURE_TEST SHELLCHECK TRIVY COSIGN; do
     case " $LARAOCI_TOOLS " in
       *" $t "*) : ;;
       *) echo "$t missing from LARAOCI_TOOLS" >&2; false ;;

@@ -414,3 +414,22 @@ hadolint_step() {
   [[ "$output" == *"packages"* ]]
   [[ "$output" == *"security-events"* ]]
 }
+
+@test "workflows: every published manifest list is signed, recursively (§11)" {
+  # -r signs each child manifest as well as the index. Without it a consumer
+  # who pins a per-platform digest - the supply-chain-strict path §8 recommends
+  # - finds no signature at all.
+  run yq -r '.jobs.merge.steps[] | select((.run // "") | test("cosign sign")) | .run' \
+    .github/workflows/merge.yml
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [[ "$output" == *"-r"* ]]
+  [[ "$output" == *"--yes"* ]]
+}
+
+@test "workflows: the signing job requests id-token: write" {
+  # Keyless signing IS the OIDC token. Without it cosign falls back to an
+  # interactive browser flow and the job hangs until it times out.
+  run yq -r '.jobs."merge-d0".permissions."id-token"' .github/workflows/release.yml
+  [ "$output" = "write" ]
+}

@@ -23,6 +23,11 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
 jobs:
   merge:
     runs-on: ubuntu-latest
@@ -151,3 +156,46 @@ jobs:
           # consumer only discovers it on the platform that is missing.
           bin/assert-metadata.sh --image "$IMAGE" --ref "$DATED" --source registry \
             --platform linux/amd64 --platform linux/arm64
+
+      - name: Install the pinned cosign
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bin/fetch-tools.sh --dest "$HOME/.local/bin" cosign
+
+      - name: Sign the manifest list (keyless, §11)
+        env:
+          REGISTRY: ${{ inputs.registry_namespace }}
+          IMAGE: ${{ inputs.image }}
+          DIGEST: ${{ steps.create.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # THE IDENTITY THIS BINDS TO IS THIS FILE. Fulcio takes the
+          # certificate SAN from the OIDC `job_workflow_ref` claim - the
+          # REUSABLE workflow, not the caller - so the signature names
+          # .github/workflows/merge.yml, and README's `cosign verify` command
+          # must say merge.yml too. A verify command that names release.yml
+          # would always fail, and a check that always fails is a check people
+          # stop running (trap 3).
+          #
+          # -r signs each child manifest as well as the index, so a consumer who
+          # pinned a per-platform digest still has something to verify.
+          cosign sign -r --yes "${REGISTRY}/${IMAGE}@${DIGEST}"
+
+      - name: Verify the signature we just made
+        env:
+          REGISTRY: ${{ inputs.registry_namespace }}
+          IMAGE: ${{ inputs.image }}
+          DIGEST: ${{ steps.create.outputs.digest }}
+          IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/merge.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # An unverifiable signature is decorative (§11). This runs the exact
+          # shape of the command the README asks consumers to run, against the
+          # signature that was just created - so a wrong identity string fails
+          # HERE, in CI, rather than in a consumer's terminal.
+          cosign verify \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$IDENTITY" \
+            "${REGISTRY}/${IMAGE}@${DIGEST}" | jq '.[0].optional.Subject // "verified"'
