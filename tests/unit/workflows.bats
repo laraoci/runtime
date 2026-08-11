@@ -511,3 +511,28 @@ hadolint_step() {
     false
   }
 }
+
+@test "workflows: no expression uses a falsy middle operand (the && '' || trap)" {
+  # GitHub's ternary idiom `a && b || c` returns c whenever b is FALSY, and '',
+  # "", 0 and false all are. So `inputs.push && '' || image_ref` does not mean
+  # "empty when pushing" - it means image_ref, ALWAYS, on both paths.
+  #
+  # That shipped as build.yml's `tags:` and made every release leg die with
+  # `can't push tagged ref ... by digest`, because push-by-digest and a tag
+  # cannot be combined. It is invisible to actionlint, which type-checks the
+  # expression without evaluating its truthiness.
+  #
+  # The fix is always to invert so the NON-EMPTY value is the middle operand.
+  #
+  # Comments are stripped first: the fixed line documents the trap it avoids by
+  # quoting it, and a test that reads prose as if it were an expression fails on
+  # the documentation of the very thing it is asserting.
+  local bad
+  bad="$(grep -rnE -- "&& *('' *|\"\" *|0 +|false +)\|\|" .github/workflows/*.yml \
+    | grep -vE '^[^:]+:[0-9]+: *#' || true)"
+  [ -z "$bad" ] || {
+    echo "an expression falls through to its right operand unconditionally:" >&2
+    echo "$bad" >&2
+    false
+  }
+}

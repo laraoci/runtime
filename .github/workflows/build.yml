@@ -299,7 +299,12 @@ jobs:
           platforms: ${{ inputs.platforms }}
           push: false
           load: ${{ !inputs.push }}
-          tags: ${{ inputs.push && '' || steps.meta.outputs.image_ref }}
+          # WRITTEN INVERTED ON PURPOSE. GitHub's `a && b || c` yields c whenever
+          # b is FALSY, and '' is falsy - so the natural-reading
+          # `inputs.push && '' || image_ref` silently produced the tag on the
+          # push path, which is the one path that must not have one. The
+          # non-empty value has to be the middle operand.
+          tags: ${{ !inputs.push && steps.meta.outputs.image_ref || '' }}
           # PUSH BY DIGEST, NOT BY TAG (D3a's consequence). Native arm64 means no
           # single runner can produce both platforms, so a leg builds ONE
           # platform on ITS OWN hardware and publishes an untagged digest; a
