@@ -509,7 +509,7 @@ jobs:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
           set -euo pipefail
-          bin/assert-metadata.sh --image "$IMAGE" --ref "IMAGE_REF" --source daemon
+          bin/assert-metadata.sh --image "$IMAGE" --ref "$IMAGE_REF" --source daemon
 
       # Both of the steps below need the image present in the local daemon, so
       # they are gated on the build-and-load path. On a push build there is

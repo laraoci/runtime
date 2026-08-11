@@ -493,3 +493,21 @@ hadolint_step() {
     .github/workflows/release.yml
   [[ "$output" == *"exit 1"* ]]
 }
+
+@test "workflows: every --ref argument is an expansion, never a literal" {
+  # `--ref "IMAGE_REF"` - one missing $ - reached the daemon as an image NAME
+  # and died with `repository name (library/IMAGE_REF) must be lowercase`, on
+  # the step that is the only place STOPSIGNAL is asserted.
+  #
+  # Neither linter can see it: a quoted bare word is a valid string to
+  # shellcheck, and actionlint does not know what --ref means. The reference
+  # arguments are the ones worth checking by hand, because every one of them
+  # names an image that a verification step is about to trust.
+  local bad
+  bad="$(grep -hoE -- '--ref [^ ]+' .github/workflows/*.yml | grep -vE -- '--ref "?\$' || true)"
+  [ -z "$bad" ] || {
+    echo "a --ref argument is a literal, not an expansion:" >&2
+    echo "$bad" >&2
+    false
+  }
+}
