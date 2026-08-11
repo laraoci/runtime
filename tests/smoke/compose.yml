@@ -12,6 +12,14 @@
 # into an assertion: if cgi-fcgi cannot ping the pool, the stack never comes up
 # and the whole suite fails loudly rather than passing against a dead pool.
 
+# The fixture app's environment, in one place. Four services carried identical
+# copies of the key and the session driver; four copies is four chances for one
+# to drift and a reader has to check all of them to know they match. Not a
+# secret - a throwaway key for a throwaway container, deliberately committed.
+x-app-env: &app-env
+  APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
+  SESSION_DRIVER: file
+
 volumes:
   # The application tree, shared by every service. A NAMED VOLUME rather than a
   # bind mount of tests/fixtures/app, and that is not a stylistic choice: a bind
@@ -112,23 +120,8 @@ services:
     image: ${LARAOCI_REGISTRY:?}/cli:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
     working_dir: /var/www/html
     environment:
+      <<: *app-env
       LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
-      # A THROWAWAY TEST KEY, not a secret. It is committed on purpose: the
-      # fixture ships no .env (LOCI-030 depends on the environment being the
-      # only source of configuration), and without APP_KEY every web route 500s
-      # in EncryptCookies before it reaches the assertion - which reads as "the
-      # image is broken" rather than "the app is unconfigured". Fixed rather
-      # than generated per run so a failure is reproducible.
-      #
-      # NEVER copy this into anything that stores real data.
-      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
-      # Laravel 13 defaults the session store to `database`, and the fixture
-      # ships migrations for jobs, cache and widgets but deliberately not for
-      # sessions - so the default 500s on the first request that touches one.
-      # `file` is the smaller fix than carrying a framework migration, and it
-      # earns its keep: it writes to storage/framework/sessions on the shared
-      # named volume, which proves the laravel user can write into the mount.
-      SESSION_DRIVER: file
       # Laravel's own default today, pinned here because LOCI-036 depends on it:
       # the fixture ships a `jobs` table migration and no config/queue.php, so a
       # framework default that changed would silently move the queue to `sync` -
@@ -150,16 +143,11 @@ services:
   fpm:
     image: ${LARAOCI_REGISTRY:?}/fpm:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
     environment:
+      <<: *app-env
       # LOCI-030's payload. Reaching env() inside a request proves clear_env = no
       # survived; with FPM's default the route reports MISSING and everything
       # else stays green.
       LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
-      # Same throwaway key the cli service carries, and it must stay identical:
-      # a request served by fpm and a command run through cli are asserted to
-      # agree about the application, which they cannot do across two keys.
-      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
-      # Must match cli for the same reason APP_KEY must.
-      SESSION_DRIVER: file
     volumes:
       - app:/var/www/html
 
@@ -197,9 +185,8 @@ services:
     image: ${LARAOCI_REGISTRY:?}/queue:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
     working_dir: /var/www/html
     environment:
+      <<: *app-env
       LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
-      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
-      SESSION_DRIVER: file
       # Laravel's own default today, pinned here because LOCI-036 depends on it:
       # the fixture ships a `jobs` table migration and no config/queue.php, so a
       # framework default that changed would silently move the queue to `sync` -
@@ -216,8 +203,7 @@ services:
     image: ${LARAOCI_REGISTRY:?}/scheduler:${LARAOCI_PHP:?}-${LARAOCI_DEBIAN:?}
     working_dir: /var/www/html
     environment:
+      <<: *app-env
       LARAOCI_SMOKE_VALUE: ${LARAOCI_SMOKE_VALUE:?}
-      APP_KEY: base64:JlUKV35mD9rfHaym807CnM//B1YwNXzlKr7Pk/+eqxw=
-      SESSION_DRIVER: file
     volumes:
       - app:/var/www/html
