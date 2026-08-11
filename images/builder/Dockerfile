@@ -61,6 +61,20 @@ COPY --from=node:lts-trixie-slim@sha256:ae91dcc111a68c9d2d81ff2a17bda61be1264261
 # Every tool is executed once, as an assertion. A COPY --from that lands a
 # binary the target platform cannot run fails HERE rather than in a consumer's
 # build six weeks later.
+#
+# THE npm UPGRADE IS A CVE FIX, and the one place this image reaches past a
+# digest pin (D42). node ships npm as a bundled tree, and that tree - not node
+# itself - carries the findings: tar, undici, brace-expansion and ip-address all
+# live under /usr/local/lib/node_modules/npm/node_modules. Bumping the node
+# digest does NOT help; measured 2026-08-11, the newest node:lts-trixie-slim
+# carries the identical set. Upgrading npm in place does: 7 findings to 3,
+# including the CRITICAL node-tar gzip bomb - which matters here more than
+# anywhere, because `npm ci` is exactly the thing that extracts untrusted
+# tarballs (D26).
+#
+# Pinned to an exact version, and ordered AFTER the shims because it is invoked
+# through them. If a future npm moves npm-cli.js, the `npm --version` assertion
+# below fails the build here rather than shipping a broken shim.
 USER root
 # hadolint ignore=DL3008
 RUN set -eux; \
@@ -69,6 +83,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
     ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
+    npm install -g npm@12.0.2; \
     install -d -o "${USER_UID}" -g "${USER_GID}" -m 0755 \
       "/home/${USER_NAME}/.composer" "/home/${USER_NAME}/.npm"; \
     composer --version; \
