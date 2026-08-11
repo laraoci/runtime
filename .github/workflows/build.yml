@@ -444,7 +444,11 @@ jobs:
           jq -r '[.. | .buildType? // empty] | .[0]' <<<"$prov"
 
       - name: Install the pinned trivy
-        if: ${{ inputs.structure_test }}
+        # BOTH, not either. The advisory PR scan is gated on structure_test; the
+        # SARIF report and the hard gate are gated on push. Installing on only
+        # one of them leaves a caller combination where the security gate fails
+        # as `command not found` - a gate failing for a reason that is not a CVE.
+        if: ${{ inputs.push || inputs.structure_test }}
         run: |
           set -euo pipefail
           # Through the checksum-verifying fetcher, never the marketplace

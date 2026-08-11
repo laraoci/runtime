@@ -585,3 +585,18 @@ hadolint_step() {
     fi
   done
 }
+
+@test "workflows: trivy is installed on every path that uses it" {
+  # The install was gated on structure_test while two of the three consumers -
+  # the SARIF scan and the hard gate - are gated on push. A caller with
+  # push: true, structure_test: false would reach the security gate and die on
+  # `trivy: command not found`: the gate failing for a reason that is not a CVE.
+  local install
+  install="$(yq -r '.jobs.build.steps[]
+    | select((.name // "") | test("Install the pinned trivy"))
+    | .if' .github/workflows/build.yml)"
+  [ -n "$install" ]
+  [[ "$install" == *"inputs.push"* ]]
+  [[ "$install" == *"inputs.structure_test"* ]]
+  [[ "$install" == *"||"* ]]
+}
