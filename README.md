@@ -453,6 +453,139 @@ unconditionally - including on failure and on Ctrl-C:
 
     tests/smoke/run.sh --php 8.4                   # add --keep to inspect the stack
 
+## Supply chain
+
+Every published image carries an SPDX SBOM, SLSA provenance (`mode=max`), a
+Cosign keyless signature, and the full OCI label set. All four are verifiable
+from a terminal with nothing installed but `cosign`, `docker` and `jq`.
+
+**Every command below was executed against an image this pipeline published
+before it was written here.** A verify command that has never been run is worse
+than none: it teaches you a check that always fails, and you stop running checks.
+Substitute the tag you are actually pulling.
+
+### Verify the signature
+
+```bash
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/laraoci/runtime/\.github/workflows/merge\.yml@refs/tags/v' \
+  ghcr.io/laraoci/runtime:8.4-trixie-20260811 | jq .
+```
+
+The identity names **`merge.yml`**, not `release.yml`, and that is correct rather
+than a typo: Fulcio takes the certificate subject from the OIDC
+`job_workflow_ref` claim, which is the *reusable* workflow that ran `cosign
+sign`. Verified both ways - the `merge.yml` form succeeds and the `release.yml`
+form exits 1.
+
+The regexp is anchored on `refs/tags/v` so only tag-built releases verify. An
+image built by a manual `workflow_dispatch` carries a branch ref instead and will
+**not** satisfy this command, deliberately: production images come from tags.
+
+Signing is recursive, so a per-platform digest is signed too - the same command
+against `runtime@sha256:<arch-specific digest>` verifies.
+
+### Inspect the SBOM
+
+```bash
+docker buildx imagetools inspect ghcr.io/laraoci/runtime:8.4-trixie-20260811 \
+  --format '{{ json (index .SBOM "linux/arm64").SPDX }}' | jq '.packages | length'
+```
+
+Drop the `index …` wrapper for a single-platform reference. The predicate is
+`https://spdx.dev/Document`. Both architectures carry their own SBOM.
+
+### Inspect the build provenance
+
+```bash
+docker buildx imagetools inspect ghcr.io/laraoci/runtime:8.4-trixie-20260811 \
+  --format '{{ json (index .Provenance "linux/amd64").SLSA }}' \
+  | jq '.buildDefinition.buildType,
+        .buildDefinition.externalParameters.configSource,
+        .runDetails.builder.id,
+        (.buildDefinition.resolvedDependencies | length)'
+```
+
+These are **SLSA v1** paths. The older v0.2 shape (`.buildType`,
+`.invocation.configSource`) does not error against what BuildKit attaches - it
+prints `null` and reads as success, which is the worst possible outcome for a
+verification command.
+
+`runDetails.builder.id` is the workflow run that produced the image. A non-empty
+`resolvedDependencies` is the `mode=max` marker: the attestation carries the
+Dockerfile, the build arguments and the layer source maps, not just a summary.
+
+### Confirm both architectures are present
+
+```bash
+docker buildx imagetools inspect ghcr.io/laraoci/runtime:8.4-trixie-20260811 \
+  --format '{{ json .Manifest }}' \
+  | jq -r '.manifests[].platform | "\(.os)/\(.architecture)"'
+```
+
+`unknown/unknown` entries in that output are the SBOM and provenance manifests,
+not a broken image. Expect one per real platform.
+
+## Choosing a tag
+
+| Tag form      | Example                     | Mutability    | Use                    |
+|---------------|-----------------------------|---------------|------------------------|
+| PHP minor     | `:8.4`                      | Rolling       | Dev, non-critical      |
+| PHP + Debian  | `:8.4-trixie`               | Rolling       | Explicit OS pin        |
+| Dated         | `:8.4-trixie-20260811`      | **Immutable** | **Production**         |
+| Patch + dated | `:8.4.10-trixie-20260811`   | **Immutable** | Strict pinning         |
+| Digest        | `@sha256:…`                 | **Immutable** | Supply-chain-strict    |
+| `:latest`     |                             | Rolling       | Default PHP version only |
+
+**Use a dated tag or a digest in production.** Rolling tags are repointed by
+every release and by the weekly rebuild; that is what makes them useful for
+development and unsuitable for a deployment you want to be able to reproduce.
+
+A dated tag is never overwritten. A same-day rebuild publishes a counter instead:
+`:8.4-trixie-20260811-2`, then `-3`. So a dated tag you have pinned cannot change
+underneath you, and a rebuild is always visible as a new reference.
+
+Keep them current automatically:
+
+```json
+// renovate.json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/laraoci/**"],
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)-(?<compatibility>\\w+)-(?<patch>\\d+)(?:-(?<build>\\d+))?$",
+      "pinDigests": true
+    }
+  ]
+}
+```
+
+The trailing `(?:-(?<build>\d+))?` is load-bearing: without it the pattern misses
+every same-day rebuild, and `-20260811-2` is a reference this project really does
+publish. `compatibility` holds the Debian suite, so Renovate will not offer you a
+`bookworm` image as an upgrade from a `trixie` one. Rolling tags and the
+patch+dated form deliberately do not match - the first should not be bumped by a
+bot, and the second changes on PHP patch releases as well as dates, which is a
+different scheme.
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+```
+
+Dependabot updates the tag in your `Dockerfile` or compose file; Renovate can
+additionally pin the digest beside it, which is the strongest form and the one
+the signature and SBOM commands above are keyed to.
+
 ## Security notes
 
 ### `/fpm-status` is enabled, and your web server must not route to it
