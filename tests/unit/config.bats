@@ -71,3 +71,15 @@ setup() {
     false
   fi
 }
+
+@test "config: no image description spans more than one line" {
+  # An OCI label is single-line by definition, and build.yml writes this value
+  # into $GITHUB_OUTPUT as `description=<value>`. A literal-block scalar there
+  # injects arbitrary key=value pairs into that step's outputs - including
+  # base_digest, which the same step emits and which feeds both the BASE_DIGEST
+  # build argument and org.opencontainers.image.base.digest.
+  run yq -r '.images | to_entries | .[]
+    | select((.value.description // "") | test("\n")) | .key' config/images.yml
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
