@@ -31,12 +31,15 @@ jobs:
         run: |
           set -euo pipefail
           shellcheck --version
-          mapfile -t scripts < <(git ls-files '*.sh')
+          # '*.bash' as well as '*.sh': tests/smoke/helpers.bash is ordinary bash
+          # sourced by every smoke suite, and a selector that names one extension
+          # leaves it unlinted on both this path and the Makefile's.
+          mapfile -t scripts < <(git ls-files '*.sh' '*.bash')
           shellcheck -S warning "${scripts[@]}"
       - name: shfmt
         run: |
           set -euo pipefail
-          mapfile -t scripts < <(git ls-files '*.sh')
+          mapfile -t scripts < <(git ls-files '*.sh' '*.bash')
           shfmt -d -i 2 -ci "${scripts[@]}"
 
   actions:

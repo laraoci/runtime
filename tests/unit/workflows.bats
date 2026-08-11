@@ -659,3 +659,14 @@ hadolint_step() {
   [[ "$install" == *"shellcheck"* ]]
   [[ "$install" == *"actionlint"* ]]
 }
+
+@test "workflows: CI and the Makefile select shell scripts the same way" {
+  # The same rule as the Dockerfile-selector test above. `git ls-files '*.sh'`
+  # missed tests/smoke/helpers.bash - 145 lines of ordinary bash sourced by every
+  # smoke suite - so it was neither shellchecked nor shfmt-checked on either path.
+  local ci mk
+  ci="$(run_bodies .github/workflows/lint.yml | grep -c "git ls-files '\*.sh' '\*.bash'" || true)"
+  [ "$ci" -eq 2 ]   # shellcheck and shfmt
+  mk="$(grep -c "git ls-files '\*.sh' '\*.bash'" Makefile || true)"
+  [ "$mk" -eq 3 ]   # lint, fmt, fmt-fix
+}
