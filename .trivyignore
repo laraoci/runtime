@@ -53,8 +53,8 @@
 # release changes nothing on its own. See D41 - the same mechanism silently
 # defeats §9.3's weekly rebuild, which is the control this file's header points
 # at for exactly this class of CVE.
-CVE-2026-64561 exp:2026-09-15   # linux-libc-dev 6.12.100-1, fixed in 6.12.101-1
-CVE-2026-64564 exp:2026-09-15   # linux-libc-dev 6.12.100-1, fixed in 6.12.101-1
+#CVE-2026-64561 exp:2026-09-15   # linux-libc-dev 6.12.100-1, fixed in 6.12.101-1
+#CVE-2026-64564 exp:2026-09-15   # linux-libc-dev 6.12.100-1, fixed in 6.12.101-1
 
 # builder, 2026-08-11. npm's BUNDLED dependency tree, under
 # /usr/local/lib/node_modules/npm/node_modules - not node itself, and not
