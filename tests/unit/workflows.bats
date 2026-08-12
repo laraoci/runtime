@@ -497,11 +497,12 @@ hadolint_step() {
   [ -n "$body" ]
 
   classify() {
-    # Run the step body with REF set and GITHUB_OUTPUT captured, then echo the
-    # resolved value. The step writes is_stable_release=... to $GITHUB_OUTPUT.
-    local ref="$1" out
+    # Run the step body with REF and IS_REBUILD set and GITHUB_OUTPUT captured,
+    # then echo the resolved value. Two arguments, because the channel now has
+    # two inputs: the ref shape, and whether this is a scheduled rebuild (🧭 2).
+    local ref="$1" rebuild="${2:-false}" out
     out="$(mktemp)"
-    REF="$ref" GITHUB_OUTPUT="$out" bash -c "$body" >/dev/null 2>&1
+    REF="$ref" IS_REBUILD="$rebuild" GITHUB_OUTPUT="$out" bash -c "$body" >/dev/null 2>&1
     grep -oE 'is_stable_release=(true|false)' "$out" | tail -n1 | cut -d= -f2
     rm -f "$out"
   }
@@ -511,6 +512,17 @@ hadolint_step() {
   [ "$(classify refs/tags/v1.0.0-rc.1)" = "false" ]
   [ "$(classify refs/tags/v1.0.0-beta.2)" = "false" ]
   [ "$(classify refs/heads/main)" = "false" ]
+
+  # 🧭 2. A schedule event carries NO TAG - its ref is refs/heads/main, which the
+  # line above correctly classifies as "does not repoint". §9.3 is explicit that
+  # the rebuild DOES produce a new dated tag and DOES repoint the rolling tags,
+  # so the fact is carried by an explicit input rather than sniffed from a ref
+  # that cannot express it.
+  [ "$(classify refs/heads/main true)" = "true" ]
+
+  # And an empty string - what `inputs.is_rebuild` renders as on a TAG PUSH,
+  # where the inputs context does not exist - must not be read as true.
+  [ "$(classify refs/tags/v1.0.0-rc.1 '')" = "false" ]
 }
 
 @test "workflows: a prerelease is not published as the Latest GitHub release" {
@@ -801,5 +813,34 @@ hadolint_step() {
   [ "$output" = "absent" ]
   run yq -r '.jobs.build.steps[] | select(.id == "build") | .with["no-cache-filters"] // "absent"' \
     .github/workflows/build.yml
+  [ "$output" = "absent" ]
+}
+
+@test "workflows: every build stage forwards the rebuild stamp (§9.3)" {
+  # A stage that forgot it would rebuild runtime from a busted layer and then
+  # build its children against a stale one - or, for build-d0, would rebuild
+  # nothing at all and report success, which is THE failure mode of this
+  # milestone.
+  local job
+  for job in build-d0 build-d1 build-d2; do
+    run yq -r ".jobs.\"$job\".with.rebuild_stamp" .github/workflows/release.yml
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"rebuild_stamp"* ]] || {
+      echo "$job does not forward inputs.rebuild_stamp" >&2
+      false
+    }
+  done
+}
+
+@test "workflows: release.yml is callable, and only rebuild.yml sets is_rebuild" {
+  run yq -r '.on | keys | join(",")' .github/workflows/release.yml
+  [[ "$output" == *"workflow_call"* ]]
+  # is_rebuild is a workflow_call input and NOT a workflow_dispatch one: a human
+  # dispatching release.yml must not be able to claim to be a scheduled rebuild
+  # and repoint :latest off a branch. There is one entry point for that, and it
+  # is rebuild.yml.
+  run yq -r '.on.workflow_call.inputs.is_rebuild.type' .github/workflows/release.yml
+  [ "$output" = "boolean" ]
+  run yq -r '.on.workflow_dispatch.inputs.is_rebuild // "absent"' .github/workflows/release.yml
   [ "$output" = "absent" ]
 }
