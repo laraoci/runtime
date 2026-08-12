@@ -69,12 +69,35 @@ COPY --from=mlocati/php-extension-installer:2@sha256:b6d3fa381b9ba5cf051117c1c60
 # verifiability, not bit reproducibility - and a pinned version would break the
 # weekly rebuild (§9.3) the moment Debian publishes a security update, which is
 # the one mechanism that keeps these images safe.
-# hadolint ignore=DL3008,SC2016
+#
+# DL3005 (no `apt-get upgrade`) is suppressed on the same grounds, and the
+# upgrade below is the reason the rule is wrong here (D43). Without it this
+# image inherits the BASE's package versions PERMANENTLY. `apt-get update`
+# refreshes the index and upgrades nothing; the install below upgrades only what
+# `tini` and `gettext-base` need, which is nothing, because every dependency
+# they have is already satisfied. So the version of a base package is whatever
+# upstream last shipped, until upstream ships again.
+#
+# Measured 2026-08-12 on php:8.3, 8.4 and 8.5-fpm-trixie - all three identical:
+# `linux-libc-dev` installed at 6.12.100-1, with 6.12.101-1 sitting in apt's
+# candidate from trixie-security. That is the 2026-08-11 gate block (D40), and a
+# build with an ENTIRELY COLD cache reproduces it exactly. Deleting every GHA
+# cache entry changed nothing, because there was never an upgrade to re-run -
+# which is the half D41 got wrong, and the reason this line is not
+# `no-cache-filters`.
+#
+# One line rather than `--only-upgrade linux-libc-dev`, because the CLASS is the
+# point: any base package Debian fixes between upstream rebuilds is this same
+# bug, and naming them one at a time is a list nobody maintains. Cost against
+# that base: 1 package, +14.3 kB. No DEBIAN_FRONTEND - with no tty debconf falls
+# back to Noninteractive on its own, verified on this base rather than assumed.
+# hadolint ignore=DL3005,DL3008,SC2016
 RUN set -eux; \
     install-php-extensions \
       bcmath exif gd imagick intl opcache pcntl \
       pdo_mysql pdo_pgsql redis sockets zip; \
     apt-get update; \
+    apt-get -y upgrade; \
     apt-get install -y --no-install-recommends tini gettext-base; \
     apt-get purge -y --auto-remove \
       ghostscript libgs10 libgs10-common libgs-common poppler-data; \

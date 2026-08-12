@@ -22,39 +22,26 @@
 # Active entries. Each one is listed in the release notes of every release it
 # is active for (LOCI-047), so a suppression cannot quietly outlive its reason.
 
-# The gate's first real block, on the 🚦 Gate 2 staging run of 2026-08-11.
+# REMOVED 2026-08-12: CVE-2026-64561 and CVE-2026-64564 (linux-libc-dev).
 #
-# Both are Linux KERNEL vulnerabilities (KVM, SCTP) reported against
-# linux-libc-dev, which is the kernel HEADERS package - build-time C
-# declarations, with no code path in a running container. The container uses the
-# HOST's kernel, which these headers neither contain nor influence.
+# The gate's first real block, on the 🚦 Gate 2 staging run of 2026-08-11: two
+# Linux KERNEL flaws (KVM, SCTP) reported against the kernel HEADERS package.
+# Suppressed at the time because the fix looked unobtainable - first blamed on
+# Debian not having published 6.12.101-1, then on a GHA cache hit keeping the
+# apt layer from re-running.
 #
-# Not suppressed as noise, though. linux-libc-dev is genuinely removable, and
-# doing so would end this whole class permanently: it is reachable only through
-# libc6-dev, so purging it takes g++, libstdc++-14-dev and the rest of the C++
-# toolchain with it - a measured 87 MB off every one of the six images. That is
-# deferred rather than rejected, because it changes §7.4's documented node-gyp
-# trade, which tests/structure/builder.yaml pins. See D40.
+# Both diagnoses were wrong, and the second was disproved by deleting every
+# cache entry in the repository: the cold rebuild produced 6.12.100-1 again.
+# linux-libc-dev ships INSTALLED in the upstream base (6.12.100-1 on php:8.3,
+# 8.4 and 8.5-fpm-trixie alike) and nothing in the graph upgraded an
+# already-installed package, so the version was whatever upstream last shipped,
+# cache or no cache, forever.
 #
-# WHAT UNBLOCKS THESE IS NOT DEBIAN. Corrected 2026-08-11, having first been
-# recorded here as "waiting for trixie to publish 6.12.101-1": it is already
-# published, and `apt-cache policy linux-libc-dev` in the base reports it as the
-# CANDIDATE from trixie-security. A fresh Debian 13 install gets it today.
-#
-# The image does not, because linux-libc-dev is not installed by name. It comes
-# in as a dependency inside runtime's one big RUN layer, so the version baked in
-# is whatever apt resolved when THAT LAYER was first built - and the layer is
-# restored from the GitHub Actions cache (build.yml's `cache-from: type=gha`).
-# Its key is the RUN command plus the parent, the parent is pinned by
-# BASE_DIGEST, and upstream php:8.3-fpm-trixie has not been rebuilt since
-# 2026-07-13. Same key, cache hit, `apt-get update` never re-runs.
-#
-# So the blocker is CACHE INVALIDATION, not an upstream fix, and re-running the
-# release changes nothing on its own. See D41 - the same mechanism silently
-# defeats §9.3's weekly rebuild, which is the control this file's header points
-# at for exactly this class of CVE.
-#CVE-2026-64561 exp:2026-09-15   # linux-libc-dev 6.12.100-1, fixed in 6.12.101-1
-#CVE-2026-64564 exp:2026-09-15   # linux-libc-dev 6.12.100-1, fixed in 6.12.101-1
+# runtime's RUN 1 now runs `apt-get -y upgrade` (D43), measured at 1 package and
+# +14.3 kB, which takes it to 6.12.101-1 and fixes both. So there is nothing
+# left to suppress. See D40, D41 and D43 for the full record - including that
+# D41's cache hazard is real, still applies to §9.3's weekly rebuild, and was
+# never what held these two.
 
 # builder, 2026-08-11. npm's BUNDLED dependency tree, under
 # /usr/local/lib/node_modules/npm/node_modules - not node itself, and not
