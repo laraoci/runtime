@@ -844,3 +844,57 @@ hadolint_step() {
   run yq -r '.on.workflow_dispatch.inputs.is_rebuild // "absent"' .github/workflows/release.yml
   [ "$output" = "absent" ]
 }
+
+@test "workflows: the rebuild does not duplicate the release orchestration (§9.3)" {
+  # The whole design. If rebuild.yml grows its own build/merge/repoint jobs
+  # there are two definitions of how a LaraOCI release is assembled, and the one
+  # that rots is the one no human watches every week.
+  run yq -r '[.jobs | to_entries | .[] | select(.value.uses != null) | .value.uses] | join(",")' \
+    .github/workflows/rebuild.yml
+  [[ "$output" == *"./.github/workflows/release.yml"* ]]
+  # And no job of its own may build, merge or repoint.
+  run bash -c "yq -r '.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.run // \"\") | test(\"imagetools create|buildx build\"))] | length > 0)
+    | .key' .github/workflows/rebuild.yml"
+  [ -z "$output" ]
+}
+
+@test "workflows: the rebuild declares itself a rebuild and stamps the cache (🧭 1, 🧭 2)" {
+  run yq -r '.jobs.rebuild.with.is_rebuild | tostring' .github/workflows/rebuild.yml
+  [ "$output" = "true" ]
+  run yq -r '.jobs.rebuild.with.rebuild_stamp' .github/workflows/rebuild.yml
+  [[ "$output" == *"stamp"* ]]
+  # It must NEVER ask for a deprecated version (§13, trap 2).
+  run yq -r '.jobs.rebuild.with.include_deprecated // "absent"' .github/workflows/rebuild.yml
+  [ "$output" = "absent" ]
+}
+
+@test "workflows: exactly one job in the rebuild reads the clock (🧭 2's rule)" {
+  # Same reasoning as release.yml's prepare: 36 legs must agree on one stamp. A
+  # second read splits the rebuild across a midnight boundary and builds runtime's
+  # two architectures against two different package sets.
+  run yq -r '[.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.run // "") | test("date -u"))] | length > 0)
+    | .key] | join(",")' .github/workflows/rebuild.yml
+  [ "$output" = "stamp" ]
+}
+
+@test "workflows: a manual rebuild cannot repoint production without saying so" {
+  # THE GATE 2 FOOTGUN, in this workflow's shape. A scheduled run SHOULD repoint
+  # ghcr.io/laraoci/* - that is §9.3. A HUMAN pressing "Run workflow" with the
+  # namespace left blank would do the same thing by accident, on a workflow whose
+  # entire purpose is to move :latest. The confirmation string is the difference
+  # between the two, and it is checked in the first job, before any leg starts.
+  local body
+  body="$(yq -r '.jobs.guard.steps[] | select(.id == "confirm") | .run' \
+    .github/workflows/rebuild.yml)"
+  [[ "$body" == *"REPOINT-PRODUCTION"* ]]
+  [[ "$body" == *"exit 1"* ]]
+}
+
+@test "workflows: the rebuild queues rather than cancels (§8)" {
+  # Cancelling mid-publish is how a manifest list ends up missing an
+  # architecture - the same reason release.yml never cancels.
+  run yq -r '.concurrency."cancel-in-progress" | tostring' .github/workflows/rebuild.yml
+  [ "$output" = "false" ]
+}
