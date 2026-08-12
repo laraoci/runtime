@@ -71,6 +71,7 @@ jobs:
     outputs:
       dated_suffix: ${{ steps.suffix.outputs.dated_suffix }}
       registry: ${{ steps.ns.outputs.registry }}
+      is_stable_release: ${{ steps.channel.outputs.is_stable_release }}
       legs_d0: ${{ steps.legs.outputs.d0 }}
       legs_d1: ${{ steps.legs.outputs.d1 }}
       legs_d2: ${{ steps.legs.outputs.d2 }}
@@ -117,6 +118,46 @@ jobs:
           fi
 
           echo "registry=${registry}" >> "$GITHUB_OUTPUT"
+
+      # WHAT KIND OF RELEASE IS THIS - resolved once, here, beside the namespace,
+      # because "does this move the rolling tags" is the same class of question
+      # as "which namespace" and belongs in the same job (D36's pattern: resolve
+      # release-wide facts once and pass them down, never re-derive per job).
+      #
+      # Only a STABLE version tag repoints. Three ref shapes can start this
+      # workflow and only one of them may move :latest / :8.x:
+      #
+      #   refs/tags/v1.0.0        stable      -> repoint
+      #   refs/tags/v1.0.0-rc.1   prerelease  -> dated + signed tags only
+      #   refs/heads/<branch>     dispatch    -> not a release ref at all
+      #
+      # A prerelease is defined by SemVer as a hyphen-introduced identifier after
+      # the version (`1.0.0-rc.1`); a stable release never carries one. This is
+      # the spec's own definition, not a heuristic - do not "simplify" it to a
+      # regex that treats the hyphen in a date or a branch name as significant.
+      # The rolling tags are the ones every consumer pulls by default; pointing
+      # them at a rc is the one tagging mistake that reaches everybody at once
+      # (bin/release-tags.sh says the same about :latest).
+      - name: Resolve the release channel
+        id: channel
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          is_stable_release=false
+          case "$REF" in
+            refs/tags/v*-*)
+              # a version tag carrying a prerelease identifier: rc, beta, alpha
+              echo "::notice::${REF} is a PRERELEASE - dated tags and signatures only, no rolling repoint" ;;
+            refs/tags/v*)
+              is_stable_release=true
+              echo "::notice::${REF} is a stable release - rolling tags will repoint after the full matrix" ;;
+            *)
+              # workflow_dispatch on a branch: a staging/dry exercise, never a
+              # rolling repoint even when dry_run is false and the namespace is real
+              echo "::notice::${REF} is not a version tag - no rolling repoint" ;;
+          esac
+          echo "is_stable_release=${is_stable_release}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
         with:
@@ -328,9 +369,16 @@ jobs:
   # The dated tags from the successful legs remain published - they are
   # immutable, and a missing one is a visible gap rather than a silent
   # regression, which is the split §8 draws.
+  #
+  # Gated on is_stable_release as well as the matrix: a prerelease tag
+  # (v1.0.0-rc.1) and a branch dispatch both publish immutable dated tags and
+  # sign them, but neither moves :latest / :8.x. That distinction is resolved
+  # once in `prepare` (see "Resolve the release channel"), not re-derived here.
+  # !inputs.dry_run stays because a dry run of a STABLE tag must still be held
+  # back - dry_run and prerelease are independent reasons not to repoint.
   repoint:
     needs: [ prepare, release-required ]
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && needs.prepare.outputs.is_stable_release == 'true' }}
     runs-on: ubuntu-latest
     # 18 resolves then 42 rolling-tag writes. The only irreversible job here,
     # so it gets room without getting the default.
@@ -481,7 +529,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
+          # Same channel resolution the repoint gate uses. A prerelease must NOT
+          # become the repo's "Latest release": `gh release create` marks the
+          # latest by default, so an rc would headline the homepage exactly like
+          # the rolling :latest tag would have. --prerelease is GitHub's own
+          # opt-out and keeps the shakedown quiet.
+          IS_STABLE: ${{ needs.prepare.outputs.is_stable_release }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" --generate-notes --notes-file /tmp/notes.md \
-            || gh release edit "$TAG" --notes-file /tmp/notes.md
+          prerelease_flag=()
+          if [ "$IS_STABLE" != "true" ]; then
+            prerelease_flag=(--prerelease)
+          fi
+          gh release create "$TAG" "${prerelease_flag[@]}" --generate-notes --notes-file /tmp/notes.md \
+            || gh release edit "$TAG" "${prerelease_flag[@]}" --notes-file /tmp/notes.md
