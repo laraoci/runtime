@@ -30,6 +30,14 @@ defaults:
 php:
   # Exactly one version carries `default: true`; it backs :latest.
   # `status` is `supported` | `deprecated`; only `supported` is built.
+  #
+  # `deprecated_on: YYYY-MM-DD` accompanies `status: deprecated` and is the date
+  # the rolling tag FROZE. It is not decoration: §13 requires the freeze date to
+  # be stated, bin/docs-gen.sh renders it into the README and the docs site, and
+  # without it "this tag is frozen" gives a consumer no way to tell how stale the
+  # image behind it is. Both keys are set together by bin/deprecate.sh, which
+  # refuses the transitions that would deliver only some of §13's three effects.
+  #
   # A per-version `debian:` key here would OVERRIDE defaults.debian - it is the
   # trixie-transition mechanism, NOT a product axis. Absent in normal
   # operation; present only while migrating a single version off an ageing OS.

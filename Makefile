@@ -40,7 +40,7 @@ IMAGE ?=
 PHP ?=
 PHP_ARG = $(if $(PHP),--php $(PHP))
 
-.PHONY: help tools test lint fmt fmt-fix matrix affected sizes structure dockerfiles actions hooks
+.PHONY: help tools test lint fmt fmt-fix matrix affected sizes structure dockerfiles actions deprecate hooks
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) \
@@ -78,6 +78,9 @@ dockerfiles: ## Lint every Dockerfile with pinned hadolint
 
 actions: ## Lint GitHub Actions workflows with pinned actionlint
 	$(TOOLS_BIN)/actionlint
+
+deprecate: ## Deprecate a PHP version (make deprecate PHP=8.3 ON=2026-11-30)
+	bin/deprecate.sh --php $(PHP) --on $(ON)
 
 hooks: ## Print the local pre-commit sequence to run before pushing
 	@printf 'make tools && make fmt && make lint && make dockerfiles && make actions && make test\n'

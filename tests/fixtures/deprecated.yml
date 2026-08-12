@@ -6,7 +6,7 @@ defaults:
 php:
   "8.3": { status: supported }
   "8.4": { status: supported, default: true }
-  "8.5": { status: deprecated }
+  "8.5": { status: deprecated, deprecated_on: "2026-06-30" }
 size_budgets: { runtime: 1, cli: 1, fpm: 1, builder: 1, queue: 1, scheduler: 1 }
 images:
   runtime: {}

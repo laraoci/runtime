@@ -93,3 +93,21 @@ setup() {
   run grep -c '`' config/imagemagick/policy.xml
   [ "$output" -eq 0 ]
 }
+
+@test "config: every deprecated version records its freeze date (§13)" {
+  # Effect 3 of the three. A deprecated version with no date is a rolling tag
+  # frozen at an unknown moment, and the docs would have to say so.
+  run bash -c "yq -r '[.php | to_entries | .[]
+    | select(.value.status == \"deprecated\")
+    | select(.value.deprecated_on == null)
+    | .key] | join(\",\")' config/images.yml"
+  [ -z "$output" ]
+}
+
+@test "config: a freeze date is ISO 8601" {
+  run bash -c "yq -r '[.php[] | select(.deprecated_on != null) | .deprecated_on] | .[]' config/images.yml"
+  local d
+  for d in $output; do
+    [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+  done
+}

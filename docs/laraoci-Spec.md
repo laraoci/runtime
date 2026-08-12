@@ -291,6 +291,7 @@ images:
 ### Schema rules
 
 - `php.<version>.status` ∈ `supported` | `deprecated`. Only `supported` is built; `deprecated` keeps existing tags but stops receiving rebuilds.
+- `php.<version>.deprecated_on` is required when `status: deprecated` and is the ISO 8601 date the **rolling tag froze**. `bin/deprecate.sh` sets both keys together; `bin/docs-gen.sh` renders the date into the README and the docs site, so §13's "the README states the freeze date" is generated rather than remembered.
 - Exactly one PHP version carries `default: true`. It backs `:latest`.
 - `php.<version>.debian` overrides `defaults.debian` - the transition mechanism of §3.1, unset in normal operation.
 - `images.<name>.parent` defines build order. CI topologically sorts; no hand-maintained ordering.
