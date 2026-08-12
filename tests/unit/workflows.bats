@@ -472,6 +472,57 @@ hadolint_step() {
   [[ "$output" == *"Move"* ]]
 }
 
+@test "workflows: only a stable release repoints the rolling tags" {
+  # A prerelease (v1.0.0-rc.1) and a branch dispatch both publish immutable
+  # dated tags but must NOT move :latest / :8.x. The gate reads a fact resolved
+  # once in prepare, so both the dry_run reason and the prerelease reason are
+  # visible in one condition.
+  run yq -r '.jobs.repoint.if' .github/workflows/release.yml
+  [[ "$output" == *"is_stable_release"* ]]
+  [[ "$output" == *"dry_run"* ]]
+
+  # prepare must actually export the fact the gate depends on, or the gate is a
+  # comparison against an empty string that is never 'true' - a repoint that can
+  # never run, which no other test would catch.
+  run yq -r '.jobs.prepare.outputs.is_stable_release' .github/workflows/release.yml
+  [[ "$output" == *"steps.channel.outputs.is_stable_release"* ]]
+}
+
+@test "workflows: the release channel classifies the three ref shapes correctly" {
+  # Extract the case body from the channel step and drive it with each ref shape,
+  # so the classification is tested rather than eyeballed. A stable tag repoints;
+  # a prerelease tag and a branch dispatch do not.
+  local body
+  body="$(yq -r '.jobs.prepare.steps[] | select(.id == "channel") | .run' .github/workflows/release.yml)"
+  [ -n "$body" ]
+
+  classify() {
+    # Run the step body with REF set and GITHUB_OUTPUT captured, then echo the
+    # resolved value. The step writes is_stable_release=... to $GITHUB_OUTPUT.
+    local ref="$1" out
+    out="$(mktemp)"
+    REF="$ref" GITHUB_OUTPUT="$out" bash -c "$body" >/dev/null 2>&1
+    grep -oE 'is_stable_release=(true|false)' "$out" | tail -n1 | cut -d= -f2
+    rm -f "$out"
+  }
+
+  [ "$(classify refs/tags/v1.0.0)" = "true" ]
+  [ "$(classify refs/tags/v1.2.3)" = "true" ]
+  [ "$(classify refs/tags/v1.0.0-rc.1)" = "false" ]
+  [ "$(classify refs/tags/v1.0.0-beta.2)" = "false" ]
+  [ "$(classify refs/heads/main)" = "false" ]
+}
+
+@test "workflows: a prerelease is not published as the Latest GitHub release" {
+  # gh release create marks the latest by default; an rc surfaced as 'Latest'
+  # on the repo homepage defeats the point of a quiet shakedown. The publish
+  # step must pass --prerelease off the same stable-release fact.
+  local run_body
+  run_body="$(yq -r '.jobs.notes.steps[] | select(.name == "Publish the release") | .run' .github/workflows/release.yml)"
+  [[ "$run_body" == *"--prerelease"* ]]
+  [[ "$run_body" == *"IS_STABLE"* ]]
+}
+
 @test "workflows: a dry run cannot resolve to the production namespace" {
   # THE GATE 2 FOOTGUN. dry_run only skips the repoint - the 18 merge jobs still
   # write IMMUTABLE dated tags and cosign still signs them. §8 forbids
