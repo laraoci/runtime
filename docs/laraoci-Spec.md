@@ -291,6 +291,7 @@ images:
 ### Schema rules
 
 - `php.<version>.status` ∈ `supported` | `deprecated`. Only `supported` is built; `deprecated` keeps existing tags but stops receiving rebuilds.
+- `php.<version>.deprecated_on` is required when `status: deprecated` and is the ISO 8601 date the **rolling tag froze**. `bin/deprecate.sh` sets both keys together; `bin/docs-gen.sh` renders the date into the README and the docs site, so §13's "the README states the freeze date" is generated rather than remembered.
 - Exactly one PHP version carries `default: true`. It backs `:latest`.
 - `php.<version>.debian` overrides `defaults.debian` - the transition mechanism of §3.1, unset in normal operation.
 - `images.<name>.parent` defines build order. CI topologically sorts; no hand-maintained ordering.
@@ -807,6 +808,7 @@ Every published image carries OCI labels (`source`, `revision`, `created`, `vers
 
 - A PHP version is `supported` while it receives upstream **security** support, then `deprecated`.
 - `deprecated` versions keep their dated tags forever but stop receiving scheduled rebuilds. The rolling tag freezes and the README states the freeze date.
+- The three effects are implemented together and tested together: `bin/matrix.sh`'s default filter stops the scheduled rebuild, `bin/release-tags.sh` and `release.yml`'s repoint job refuse the rolling forms so the tag freezes, and `deprecated_on` supplies the stated freeze date that `bin/docs-gen.sh` renders. A deliberate release of a deprecated version remains possible - `include_deprecated` on a `workflow_dispatch` of `release.yml` - and publishes **immutable dated tags only**; that input does not reach the repoint job.
 - Debian follows §3.1: one release for the whole matrix, migrated deliberately.
 - LaraOCI's SemVer applies to the **runtime contract** (§6), not the PHP inside. Changing the UID, workdir, entrypoint behaviour, or a documented env default is a major bump. Adding or removing an extension is a minor bump and a release-note callout.
 

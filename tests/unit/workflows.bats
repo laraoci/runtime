@@ -664,6 +664,42 @@ hadolint_step() {
   [[ "$install" == *"||"* ]]
 }
 
+@test "workflows: merge.yml assembles a deprecated version, and only its dated tags (§13)" {
+  # MERGE IS ASSEMBLY, NOT POLICY. Whether a deprecated version publishes was
+  # decided in `prepare`; by the time this job runs, its legs have already
+  # pushed. Without the flag, bin/matrix.sh returns zero platforms for it and
+  # merge exits 1 - so a deliberate release (include_deprecated) would build,
+  # push, and then silently never receive a dated tag, which is trap 2's
+  # "a deliberate release can still publish" failing at the last step.
+  local bodies
+  bodies="$(yq -r '.jobs.merge.steps[] | select(has("run")) | .run' \
+    .github/workflows/merge.yml)"
+  # Comments stripped and backslash continuations joined FIRST: the call sites
+  # span several lines each, and the surrounding prose mentions both script
+  # names, so a naive grep matches the documentation rather than the code.
+  local code call
+  code="$(grep -vE '^[[:space:]]*#' <<<"$bodies" | sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}')"
+  while IFS= read -r call; do
+    [ -z "$call" ] && continue
+    [[ "$call" == *"--include-deprecated"* ]] || {
+      echo "merge.yml calls a version-filtered script without --include-deprecated:" >&2
+      echo "  $call" >&2
+      false
+    }
+  # `\.sh +--` matches an INVOCATION and not a mention: every real call here
+  # passes --image immediately, while the step's own error text ("bin/matrix.sh
+  # returned no platform for ...") never does.
+  done < <(grep -E 'bin/(matrix|release-tags)\.sh +--' <<<"$code")
+
+  # AND THE FREEZE IS STILL INTACT. The flag above is safe only because every
+  # tag this job asks for is immutable - bin/release-tags.sh refuses the rolling
+  # forms for a deprecated version no matter what flags it is handed, but a
+  # merge job that started asking for them would be relying on that refusal
+  # rather than on not asking.
+  [[ "$bodies" != *"kind rolling"* ]]
+  [[ "$bodies" != *"kind all"* ]]
+}
+
 @test "workflows: merge.yml never re-derives a tag from defaults.debian" {
   # release-tags.sh resolves the suite as "per-version debian: override, falling
   # back to defaults.debian" (§3.1). merge.yml reconstructed the dated tag by
@@ -933,4 +969,34 @@ hadolint_step() {
     .github/workflows/rebuild.yml)"
   [[ "$body" == *"actions/runs"* ]]
   [[ "$body" == *"Vulnerability gate"* ]]
+}
+
+@test "workflows: the repoint can NEVER be asked to move a deprecated rolling tag (§13)" {
+  # EFFECT 2, PINNED. The version list the repoint iterates must come from
+  # bin/php-versions.sh with NO flag - not from the input, not from an inline yq
+  # the next person can "simplify". This is the assertion that stops a
+  # half-deprecation: it fails if anyone ever plumbs include_deprecated into the
+  # one job that moves :latest.
+  local body
+  body="$(yq -r '.jobs.repoint.steps[] | select(.id == "resolve") | .run' \
+    .github/workflows/release.yml)"
+  [[ "$body" == *"bin/php-versions.sh"* ]]
+  [[ "$body" != *"include_deprecated"* ]]
+  [[ "$body" != *"INCLUDE_DEPRECATED"* ]]
+  # And the whole job, not just that step.
+  run yq -r '.jobs.repoint | tostring' .github/workflows/release.yml
+  [[ "$output" != *"include_deprecated"* ]]
+}
+
+@test "workflows: the scheduled rebuild's matrix never includes a deprecated version (§13)" {
+  # EFFECT 1. rebuild.yml passes no include_deprecated (asserted in Task 3), and
+  # the matrix step's flag comes from the input, which defaults false - so the
+  # cron path cannot reach it.
+  run yq -r '.on.workflow_call.inputs.include_deprecated.default | tostring' \
+    .github/workflows/release.yml
+  [ "$output" = "false" ]
+  local body
+  body="$(yq -r '.jobs.prepare.steps[] | select(.id == "legs") | .run' \
+    .github/workflows/release.yml)"
+  [[ "$body" == *"include-deprecated"* ]]
 }

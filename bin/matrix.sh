@@ -11,6 +11,7 @@ php_filter=""
 image_filter=""
 platform_filter=""
 depth_filter=""
+include_deprecated=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,8 +35,12 @@ while [[ $# -gt 0 ]]; do
       depth_filter="$2"
       shift 2
       ;;
+    --include-deprecated)
+      include_deprecated=1
+      shift
+      ;;
     -h | --help)
-      echo "usage: matrix.sh [--php V] [--image NAME] [--platform P] [--depth N]" >&2
+      echo "usage: matrix.sh [--php V] [--image NAME] [--platform P] [--depth N] [--include-deprecated]" >&2
       exit 0
       ;;
     *)
@@ -45,12 +50,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Supported (non-deprecated) PHP versions, in file order, each with the Debian
-# suite it builds against. A per-version `debian:` key overrides defaults.debian
-# - the §3.1 transition mechanism, unset in normal operation (spec §271).
+# The PHP versions this invocation builds, in file order, each with the Debian
+# suite it builds against - `supported` only unless --include-deprecated says
+# otherwise. A per-version `debian:` key overrides defaults.debian - the §3.1
+# transition mechanism, unset in normal operation (spec §271).
 default_debian="$("$YQ" -r '.defaults.debian' "$CONFIG")"
 php_versions=()
 declare -A php_debian=()
+
+# §13: `deprecated` stops the SCHEDULED rebuild, which is what this default
+# serves - rebuild.yml never passes the flag, so a deprecated version cannot
+# reach a cron-built leg. It does NOT forbid a release an operator explicitly
+# asked for: --include-deprecated is reachable only from a human's
+# workflow_dispatch, and even then the rolling-tag freeze still holds, because
+# that is enforced in release.yml's repoint job and in bin/release-tags.sh
+# rather than here.
+status_filter='select(.value.status != "deprecated")'
+if ((include_deprecated == 1)); then
+  status_filter='.'
+fi
+
 # One field per line, two reads per record - the same idiom as
 # read_image_graph, and for the same reason. `@tsv` with IFS=$'\t' would work
 # here today only by accident: the empty field is the LAST one and read strips
@@ -64,11 +83,10 @@ while IFS= read -r v && IFS= read -r d; do
   else
     php_debian["$v"]="$default_debian"
   fi
-done < <("$YQ" -r '
-  .php | to_entries | .[]
-  | select(.value.status != "deprecated")
-  | [.key, (.value.debian // "")]
-  | .[]' "$CONFIG")
+done < <("$YQ" -r "
+  .php | to_entries | .[] | ${status_filter}
+  | [.key, (.value.debian // \"\")]
+  | .[]" "$CONFIG")
 
 read_image_graph
 

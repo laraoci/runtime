@@ -19,6 +19,7 @@ require_mikefarah_yq
 # notices until a consumer pins the pair.
 
 date_str=""
+include_deprecated=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -27,8 +28,12 @@ while [[ $# -gt 0 ]]; do
       date_str="$2"
       shift 2
       ;;
+    --include-deprecated)
+      include_deprecated=1
+      shift
+      ;;
     -h | --help)
-      echo "usage: next-dated-suffix.sh --date YYYYMMDD" >&2
+      echo "usage: next-dated-suffix.sh --date YYYYMMDD [--include-deprecated]" >&2
       exit 0
       ;;
     *)
@@ -92,15 +97,30 @@ mapfile -t images < <("$YQ" -r '.images | keys | .[]' "$CONFIG")
 
 php_versions=()
 declare -A php_debian=()
+# THE PROBE MUST COVER EXACTLY WHAT THE RELEASE WILL PUBLISH (§8, §13). This
+# script answers "which dated suffix is free", and it answers it by asking the
+# registry about every image x php the release is about to write. A version the
+# release publishes but this loop skips is a version whose dated tags are never
+# probed - so a deliberate release of a deprecated version (release.yml's
+# include_deprecated) would take a suffix that its own tags already occupy, and
+# the merge job would overwrite an immutable dated tag. §8 forbids that and it
+# cannot be undone, which is why the flag is threaded here rather than left to
+# the matrix alone.
+#
+# The default stays "supported only", so the scheduled rebuild - which never
+# passes the flag - cannot probe or mint a tag for a deprecated version.
+status_filter='select(.value.status != "deprecated")'
+if ((include_deprecated == 1)); then
+  status_filter='.'
+fi
 while IFS= read -r v && IFS= read -r d; do
   [[ -z "$v" ]] && continue
   php_versions+=("$v")
   php_debian["$v"]="${d:-$default_debian}"
-done < <("$YQ" -r '
-  .php | to_entries | .[]
-  | select(.value.status != "deprecated")
-  | [.key, (.value.debian // "")]
-  | .[]' "$CONFIG")
+done < <("$YQ" -r "
+  .php | to_entries | .[] | ${status_filter}
+  | [.key, (.value.debian // \"\")]
+  | .[]" "$CONFIG")
 
 n=1
 while :; do
