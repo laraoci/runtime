@@ -1,5 +1,7 @@
 # LaraOCI
 
+![Docker pulls](https://raw.githubusercontent.com/laraoci/runtime/main/.github/badges/docker-pulls.json)
+
 Production-ready OCI images for Laravel applications: secure defaults, a single
 shared runtime layer, and a maintained security posture. You bring `vendor/` and
 your code; LaraOCI brings a correct PHP runtime, signal handling, logging, and

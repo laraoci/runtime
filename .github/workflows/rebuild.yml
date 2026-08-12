@@ -1,0 +1,298 @@
+name: rebuild
+
+# §9.3 - THE WORKFLOW THAT KEEPS "SECURE" TRUE, and the one workflow in this
+# repository whose SUCCESS IS NOT EVIDENCE THAT IT DID ANYTHING.
+#
+# Read D41 (corrected) and D43 before changing anything here. The failure mode
+# is not a red run: it is a green run that restored runtime's apt layer from
+# cache, never executed `apt-get -y upgrade`, republished a byte-identical image
+# and reported it as this week's security rebuild. Both halves are required -
+# the invalidation (REBUILD_STAMP, D44) and the upgrade (D43) - and neither
+# substitutes for the other.
+#
+# IT DUPLICATES NOTHING. The staged matrix, the merge jobs, release-required and
+# the repoint all live in release.yml and are reached by CALLING it. What this
+# file owns is exactly the three things a rebuild does differently:
+#
+#   1. it runs on a timer rather than on a tag
+#   2. it stamps the apt layer so the layer re-executes (🧭 1)
+#   3. it declares itself a stable-channel publish despite carrying no tag (🧭 2)
+#
+# and one thing that only makes sense here: filing the issue when it fails
+# (🧭 3), because nobody is watching a cron run.
+
+on:
+  # UNCOMMENTED BY 🚦 GATE 2, NOT BEFORE. A workflow that repoints :latest with
+  # no human in the loop is the most autonomous thing in this repository, and it
+  # goes on a timer only after a human has inspected a real "different image from
+  # an unchanged base" - see docs/m5-rebuild-acceptance.md.
+  #
+  # schedule:
+  #   # Mondays, 04:17 UTC. Off the hour deliberately: GitHub's scheduler is
+  #   # heavily contended on the hour and a delayed run is a run that overlaps
+  #   # the next one.
+  #   - cron: "17 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      registry_namespace:
+        description: >-
+          Override ghcr.io/laraoci for a staged rebuild. 🚦 Gate 2 exercises this
+          entire path against a throwaway namespace before the schedule is live.
+        required: false
+        type: string
+        default: ""
+      confirm:
+        description: >-
+          Type REPOINT-PRODUCTION to run a manual rebuild against the real
+          namespace. Required only when registry_namespace is blank.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# Queued, never cancelled - the same rule as release.yml. A rebuild cancelled
+# between `imagetools create` and the repoint leaves a published dated tag that
+# no rolling tag points at, which is a gap rather than a corruption but is still
+# a state nobody asked for. Not keyed on github.ref: every rebuild runs from the
+# default branch, so one group is the whole workflow.
+concurrency:
+  group: rebuild
+  cancel-in-progress: false
+
+jobs:
+  # --- the human-error gate, before a single leg starts ----------------------
+
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      registry_namespace: ${{ steps.confirm.outputs.registry_namespace }}
+    steps:
+      - name: Refuse an unconfirmed manual rebuild of the production namespace
+        id: confirm
+        env:
+          # H1: through env:, never interpolated into the body.
+          EVENT: ${{ github.event_name }}
+          OVERRIDE: ${{ inputs.registry_namespace }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          # A SCHEDULED run repointing ghcr.io/laraoci/* is the entire point of
+          # §9.3 and needs no confirmation - the cron IS the decision, taken once,
+          # in review, when this file merged.
+          #
+          # A HUMAN pressing "Run workflow" is a different act. The namespace
+          # field defaults to blank, so the failure mode is "forgot to type
+          # anything" rather than "typed the wrong thing" - and on THIS workflow
+          # the consequence of forgetting is a full production publish and a
+          # repoint of :latest. Same reasoning as release.yml's dry_run guard,
+          # and refused in the same place: the first job, zero legs started,
+          # nothing published.
+          if [ "$EVENT" = "schedule" ]; then
+            echo "::notice::scheduled run - publishing to the configured namespace"
+          elif [ -z "$OVERRIDE" ] && [ "$CONFIRM" != "REPOINT-PRODUCTION" ]; then
+            echo "::error::a manual rebuild with a blank registry_namespace publishes to production and repoints :latest." >&2
+            echo "       Set registry_namespace to a throwaway (e.g. ghcr.io/<user>/laraoci-staging)," >&2
+            echo "       or type REPOINT-PRODUCTION in the confirm field to mean it." >&2
+            exit 1
+          fi
+          echo "registry_namespace=${OVERRIDE}" >> "$GITHUB_OUTPUT"
+
+  # --- the only clock read in this workflow ----------------------------------
+
+  stamp:
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      stamp: ${{ steps.stamp.outputs.stamp }}
+    steps:
+      - name: Resolve this rebuild's cache stamp
+        id: stamp
+        run: |
+          set -euo pipefail
+          # ONE READ, like release.yml's dated suffix and for the same reason:
+          # runtime's amd64 and arm64 legs run on different hardware and must
+          # invalidate to the SAME key, or the two halves of one manifest list
+          # are built against two different package indexes. A per-leg read
+          # splits that across a midnight boundary.
+          #
+          # A DATE, not a nonce or a run id. A re-run of a failed rebuild on the
+          # same day SHOULD reuse the layer it just built - the failure was
+          # downstream - and a nonce would cold-build all six runtime legs again
+          # to no purpose.
+          stamp="$(date -u +%Y%m%d)"
+          echo "::notice::rebuild stamp ${stamp} - runtime's apt layer will re-execute"
+          echo "stamp=${stamp}" >> "$GITHUB_OUTPUT"
+
+  # --- everything else is release.yml, unchanged -----------------------------
+
+  rebuild:
+    needs: [ guard, stamp ]
+    # The called workflow's job-level permissions are capped by what THIS job
+    # grants, so the union of what release.yml's jobs ask for has to be here:
+    # packages: write to publish, id-token: write for cosign's keyless OIDC,
+    # security-events: write for the SARIF upload. contents stays READ - a
+    # rebuild writes no GitHub release (release.yml's `notes` job is gated on a
+    # tag ref and is skipped here), and issues: write lives on `report`, not on
+    # the 36 legs that build images.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+    uses: ./.github/workflows/release.yml
+    with:
+      # 🧭 2. No tag, but a stable-channel publish: a new dated tag and a
+      # repoint, exactly as §9.3 specifies.
+      is_rebuild: true
+      # 🧭 1. The half that makes D43's upgrade re-execute.
+      rebuild_stamp: ${{ needs.stamp.outputs.stamp }}
+      registry_namespace: ${{ needs.guard.outputs.registry_namespace }}
+      # NOT PASSED, and its absence is the point (§13, trap 2): a `deprecated`
+      # version stops receiving scheduled rebuilds. include_deprecated is
+      # reachable only from a human's workflow_dispatch of release.yml.
+    secrets: inherit
+
+# --- nobody is watching a cron run (§9.3, 🧭 3) -----------------------------
+
+  report:
+    needs: [ guard, rebuild ]
+    # always(), because `needs: rebuild` alone SKIPS this job when the rebuild
+    # fails - which is the only time §9.3 asks for anything.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The narrowest scope that can file and close. Deliberately NOT on the
+      # `rebuild` job: 36 build legs do not need to be able to write issues.
+      issues: write
+      # Reading the run's own job list to name the failing legs.
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      RESULT: ${{ needs.rebuild.result }}
+      NAMESPACE: ${{ needs.guard.outputs.registry_namespace }}
+      # ONE STABLE LABEL IS THE KEY, not the title. A title drifts the first time
+      # someone edits it by hand; a label is a repo object that either matches or
+      # does not.
+      LABEL: scheduled-rebuild
+      TITLE: "Scheduled rebuild is failing"
+    steps:
+      - name: Name the failing legs, and say whether it was the scan
+        id: legs
+        run: |
+          set -euo pipefail
+          : > /tmp/legs.txt
+          scan_failed=false
+          if [ "$RESULT" != "success" ]; then
+            # The run's own job list, one line per failed STEP. The job name
+            # carries the leg identity (image, php, platform) because the matrix
+            # puts it there, so this is enough to triage without opening the tab.
+            # shellcheck disable=SC2016  # $j is a jq variable bound by `. as $j`, not a shell one - expanding it here would blank the program
+            gh api --paginate \
+              "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+              --jq '.jobs[] | select(.conclusion == "failure") | . as $j
+                    | $j.steps[]? | select(.conclusion == "failure")
+                    | "- `\($j.name)` -> **\(.name)**"' > /tmp/legs.txt || true
+            # §9.3 singles out a SCAN failure, so the issue says which kind this
+            # was rather than making a human infer it. The step name is the one
+            # in build.yml; workflows.bats asserts this string is present so a
+            # rename over there fails a test here rather than silently
+            # reclassifying every future failure as "build".
+            if grep -q 'Vulnerability gate' /tmp/legs.txt; then
+              scan_failed=true
+            fi
+          fi
+          echo "scan_failed=${scan_failed}" >> "$GITHUB_OUTPUT"
+          wc -l < /tmp/legs.txt
+
+      - name: Find, open, update or close the one rebuild issue
+        id: issue
+        env:
+          SCAN_FAILED: ${{ steps.legs.outputs.scan_failed }}
+        run: |
+          set -euo pipefail
+
+          # THE LABEL MUST EXIST BEFORE `gh issue create --label` IS CALLED, or
+          # it fails with a 422 and the run that was already failing fails again
+          # for an unrelated reason. Checked rather than `|| true`-d, so a real
+          # permission problem is still loud.
+          if [ -z "$(gh label list --repo "$REPO" --search "$LABEL" \
+                       --json name --jq ".[] | select(.name == \"${LABEL}\") | .name")" ]; then
+            gh label create "$LABEL" --repo "$REPO" \
+              --color B60205 \
+              --description "The weekly rebuild (spec §9.3) is not publishing"
+          fi
+
+          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+            --limit 1 --json number --jq '.[0].number // ""')"
+
+          if [ "$RESULT" = "success" ]; then
+            # THE OTHER HALF OF 🧭 3, and the half that is easy to forget. An
+            # issue that is only ever opened accumulates into a list of things
+            # that used to be true. Closing it when the rebuild next passes is
+            # what makes "is the rebuild broken right now" answerable by looking
+            # at one issue instead of reading a year of them.
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" \
+                --body "Rebuild passed on ${RUN_URL}. Closing."
+              gh issue close "$existing" --repo "$REPO" \
+                --reason completed
+              echo "::notice::closed #${existing} - the rebuild is publishing again"
+            else
+              echo "::notice::rebuild succeeded and no issue was open"
+            fi
+            exit 0
+          fi
+
+          kind="build or publish"
+          if [ "$SCAN_FAILED" = "true" ]; then
+            kind="vulnerability scan"
+          fi
+
+          {
+            echo "The weekly rebuild (spec §9.3) did not publish."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Run | ${RUN_URL} |"
+            echo "| Result | \`${RESULT}\` |"
+            echo "| First failure | ${kind} |"
+            printf '| Namespace | %s |\n' "${NAMESPACE:-the configured default}"
+            echo
+            echo "**Failing legs**"
+            echo
+            if [ -s /tmp/legs.txt ]; then
+              cat /tmp/legs.txt
+            else
+              echo "- none reported by the API - the run may have failed before any leg started"
+            fi
+            echo
+            echo "Nothing was published and no rolling tag moved: the repoint is gated on"
+            echo "\`release-required\`, so a partial matrix leaves every rolling tag where it was."
+            echo
+            echo "This issue is **reused** rather than reopened weekly (🧭 3, D46). It is"
+            echo "commented on each week it keeps failing and closed automatically the first"
+            echo "week the rebuild passes."
+          } > /tmp/body.md
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file /tmp/body.md
+            echo "::error::the weekly rebuild failed (${kind}) - updated #${existing}"
+          else
+            number="$(gh issue create --repo "$REPO" --label "$LABEL" \
+              --title "$TITLE" --body-file /tmp/body.md \
+              | grep -oE '[0-9]+$')"
+            echo "::error::the weekly rebuild failed (${kind}) - opened #${number}"
+          fi
+
+          # LOUD. §9.3 says the run FAILS as well as filing. A green report job
+          # on a red rebuild is a notification nobody gets.
+          exit 1

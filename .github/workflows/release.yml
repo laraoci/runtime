@@ -45,6 +45,58 @@ on:
         required: false
         type: boolean
         default: false
+      include_deprecated:
+        description: >-
+          Publish a `deprecated` PHP version as well (§13). A deliberate,
+          operator-typed action: deprecation stops the SCHEDULED rebuild, it does
+          not forbid a release someone explicitly asked for. The rolling tag
+          still does NOT move - that freeze is enforced in the repoint job and is
+          not reachable from this input.
+        required: false
+        type: boolean
+        default: false
+  # CALLED BY .github/workflows/rebuild.yml (§9.3, LOCI-049). The scheduled
+  # rebuild reuses this entire orchestration - the staged matrix, the merge
+  # jobs, release-required and the repoint - rather than duplicating it, because
+  # a second copy of "how a LaraOCI release is assembled" is a second thing to
+  # keep correct and the one that would rot is the one no human watches.
+  #
+  # Two inputs are what make a rebuild different from a release: is_rebuild,
+  # which the channel resolution reads (🧭 2), and rebuild_stamp, which reaches
+  # runtime's apt layer (🧭 1). Everything else is inherited unchanged.
+  workflow_call:
+    inputs:
+      registry_namespace:
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        required: false
+        type: boolean
+        default: false
+      is_rebuild:
+        required: false
+        type: boolean
+        default: false
+        description: >-
+          This run is a scheduled rebuild (§9.3): it carries no tag, but it does
+          publish a new dated tag and it does repoint the rolling tags. Read by
+          the channel resolution in `prepare` (🧭 2, D45). Deliberately NOT a
+          workflow_dispatch input - a human dispatching this workflow must not be
+          able to repoint :latest off a branch ref.
+      rebuild_stamp:
+        required: false
+        type: string
+        default: ""
+        description: >-
+          Forwarded to build.yml, which passes it to the graph root as
+          REBUILD_STAMP (🧭 1, D44). Empty on every release.
+      include_deprecated:
+        required: false
+        type: boolean
+        default: false
+        description: >-
+          Wired in Task 6 (LOCI-050). The scheduled rebuild NEVER sets it.
 
 permissions:
   contents: read
@@ -142,21 +194,39 @@ jobs:
         id: channel
         env:
           REF: ${{ github.ref }}
+          IS_REBUILD: ${{ inputs.is_rebuild }}
         run: |
           set -euo pipefail
           is_stable_release=false
-          case "$REF" in
-            refs/tags/v*-*)
-              # a version tag carrying a prerelease identifier: rc, beta, alpha
-              echo "::notice::${REF} is a PRERELEASE - dated tags and signatures only, no rolling repoint" ;;
-            refs/tags/v*)
-              is_stable_release=true
-              echo "::notice::${REF} is a stable release - rolling tags will repoint after the full matrix" ;;
-            *)
-              # workflow_dispatch on a branch: a staging/dry exercise, never a
-              # rolling repoint even when dry_run is false and the namespace is real
-              echo "::notice::${REF} is not a version tag - no rolling repoint" ;;
-          esac
+          if [ "$IS_REBUILD" = "true" ]; then
+            # 🧭 2 / D45. A scheduled rebuild carries NO TAG - github.ref is
+            # refs/heads/main - and the case below would classify that as "not a
+            # release ref at all". But §9.3 is explicit that the rebuild produces
+            # a new dated tag AND repoints the rolling tags, and that is the
+            # whole point of it: the rolling tags are how a consumer who did not
+            # pin receives the patched image. A rebuild whose repoint was skipped
+            # would publish the fix and leave everybody pulling the vulnerable
+            # one.
+            #
+            # So the channel gains a THIRD answer rather than the rebuild growing
+            # a repoint of its own. There stays exactly one definition of "does
+            # this move :latest", in one place, tested by one test.
+            is_stable_release=true
+            echo "::notice::scheduled rebuild - stable channel; rolling tags repoint after the full matrix"
+          else
+            case "$REF" in
+              refs/tags/v*-*)
+                # a version tag carrying a prerelease identifier: rc, beta, alpha
+                echo "::notice::${REF} is a PRERELEASE - dated tags and signatures only, no rolling repoint" ;;
+              refs/tags/v*)
+                is_stable_release=true
+                echo "::notice::${REF} is a stable release - rolling tags will repoint after the full matrix" ;;
+              *)
+                # workflow_dispatch on a branch: a staging/dry exercise, never a
+                # rolling repoint even when dry_run is false and the namespace is real
+                echo "::notice::${REF} is not a version tag - no rolling repoint" ;;
+            esac
+          fi
           echo "is_stable_release=${is_stable_release}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
@@ -221,6 +291,7 @@ jobs:
       structure_test: true
       dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
       registry_namespace: ${{ needs.prepare.outputs.registry }}
+      rebuild_stamp: ${{ inputs.rebuild_stamp }}
 
   merge-d0:
     needs: [ prepare, build-d0 ]
@@ -263,6 +334,7 @@ jobs:
       structure_test: true
       dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
       registry_namespace: ${{ needs.prepare.outputs.registry }}
+      rebuild_stamp: ${{ inputs.rebuild_stamp }}
 
   merge-d1:
     needs: [ prepare, build-d1 ]
@@ -305,6 +377,7 @@ jobs:
       structure_test: true
       dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
       registry_namespace: ${{ needs.prepare.outputs.registry }}
+      rebuild_stamp: ${{ inputs.rebuild_stamp }}
 
   merge-d2:
     needs: [ prepare, build-d2 ]

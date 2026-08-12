@@ -497,11 +497,12 @@ hadolint_step() {
   [ -n "$body" ]
 
   classify() {
-    # Run the step body with REF set and GITHUB_OUTPUT captured, then echo the
-    # resolved value. The step writes is_stable_release=... to $GITHUB_OUTPUT.
-    local ref="$1" out
+    # Run the step body with REF and IS_REBUILD set and GITHUB_OUTPUT captured,
+    # then echo the resolved value. Two arguments, because the channel now has
+    # two inputs: the ref shape, and whether this is a scheduled rebuild (🧭 2).
+    local ref="$1" rebuild="${2:-false}" out
     out="$(mktemp)"
-    REF="$ref" GITHUB_OUTPUT="$out" bash -c "$body" >/dev/null 2>&1
+    REF="$ref" IS_REBUILD="$rebuild" GITHUB_OUTPUT="$out" bash -c "$body" >/dev/null 2>&1
     grep -oE 'is_stable_release=(true|false)' "$out" | tail -n1 | cut -d= -f2
     rm -f "$out"
   }
@@ -511,6 +512,17 @@ hadolint_step() {
   [ "$(classify refs/tags/v1.0.0-rc.1)" = "false" ]
   [ "$(classify refs/tags/v1.0.0-beta.2)" = "false" ]
   [ "$(classify refs/heads/main)" = "false" ]
+
+  # 🧭 2. A schedule event carries NO TAG - its ref is refs/heads/main, which the
+  # line above correctly classifies as "does not repoint". §9.3 is explicit that
+  # the rebuild DOES produce a new dated tag and DOES repoint the rolling tags,
+  # so the fact is carried by an explicit input rather than sniffed from a ref
+  # that cannot express it.
+  [ "$(classify refs/heads/main true)" = "true" ]
+
+  # And an empty string - what `inputs.is_rebuild` renders as on a TAG PUSH,
+  # where the inputs context does not exist - must not be read as true.
+  [ "$(classify refs/tags/v1.0.0-rc.1 '')" = "false" ]
 }
 
 @test "workflows: a prerelease is not published as the Latest GitHub release" {
@@ -744,4 +756,181 @@ hadolint_step() {
       false
     fi
   done
+}
+
+@test "workflows: the rebuild stamp and D43's upgrade are in ONE instruction (§9.3, D41+D43)" {
+  # BOTH HALVES OR NEITHER. Busting a layer that has no upgrade in it reproduces
+  # the same package set (D43's measurement: a completely cold rebuild produced
+  # linux-libc-dev 6.12.100-1 again). An upgrade inside a layer that is never
+  # re-executed never runs (D41). The two are only a control when they are the
+  # SAME instruction, so that is what is asserted - not that both exist somewhere
+  # in the file.
+  local run1
+  run1="$(awk '/^RUN set -eux; \\$/{f=1} f{print} f && !/\\$/{exit}' \
+    images/runtime/Dockerfile | head -n 40)"
+  [[ "$run1" == *'REBUILD_STAMP'* ]] || {
+    echo "RUN 1 does not reference REBUILD_STAMP - the weekly rebuild cannot invalidate it" >&2
+    echo "$run1" >&2
+    false
+  }
+  [[ "$run1" == *'apt-get -y upgrade'* ]] || {
+    echo "RUN 1 lost D43's upgrade - invalidation alone reproduces the same packages" >&2
+    false
+  }
+}
+
+@test "workflows: the rebuild stamp reaches the graph root only (§9.3)" {
+  # A child declares PARENT_REF and no stamp: its cache key is chained to its
+  # parent's CONTENT, so it rebuilds when runtime moves and restores from
+  # type=gha when runtime did not. Passing the arg to a child would also make
+  # BuildKit warn about an unused build argument on 30 of 36 legs.
+  local body
+  body="$(yq -r '.jobs.build.steps[] | select(.id == "args") | .run' \
+    .github/workflows/build.yml)"
+  [[ "$body" == *'REBUILD_STAMP'* ]]
+  # The stamp must sit in the same else-branch as BASE_DIGEST - the root branch.
+  local after_else
+  after_else="${body##*BASE_DIGEST}"
+  [[ "$after_else" == *'REBUILD_STAMP'* ]]
+}
+
+@test "workflows: the release path's cache behaviour is untouched (H3, D41)" {
+  # THE OTHER HALF OF 🧭 1. The scheduled path must not buy its invalidation by
+  # changing what the release path does. Both expressions must still be gated on
+  # inputs.push and on NOTHING ELSE - in particular not on inputs.rebuild_stamp.
+  local from to
+  from="$(yq -r '.jobs.build.steps[] | select(.id == "build") | .with["cache-from"]' \
+    .github/workflows/build.yml)"
+  to="$(yq -r '.jobs.build.steps[] | select(.id == "build") | .with["cache-to"]' \
+    .github/workflows/build.yml)"
+  [ "$from" = "\${{ inputs.push && 'type=gha' || '' }}" ]
+  [[ "$to" == *"inputs.push"* ]]
+  [[ "$from" != *"rebuild_stamp"* ]]
+  [[ "$to" != *"rebuild_stamp"* ]]
+  # And no-cache must not appear at all - option (c) was rejected (D44).
+  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with["no-cache"] // "absent"' \
+    .github/workflows/build.yml
+  [ "$output" = "absent" ]
+  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with["no-cache-filters"] // "absent"' \
+    .github/workflows/build.yml
+  [ "$output" = "absent" ]
+}
+
+@test "workflows: every build stage forwards the rebuild stamp (§9.3)" {
+  # A stage that forgot it would rebuild runtime from a busted layer and then
+  # build its children against a stale one - or, for build-d0, would rebuild
+  # nothing at all and report success, which is THE failure mode of this
+  # milestone.
+  local job
+  for job in build-d0 build-d1 build-d2; do
+    run yq -r ".jobs.\"$job\".with.rebuild_stamp" .github/workflows/release.yml
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"rebuild_stamp"* ]] || {
+      echo "$job does not forward inputs.rebuild_stamp" >&2
+      false
+    }
+  done
+}
+
+@test "workflows: release.yml is callable, and only rebuild.yml sets is_rebuild" {
+  run yq -r '.on | keys | join(",")' .github/workflows/release.yml
+  [[ "$output" == *"workflow_call"* ]]
+  # is_rebuild is a workflow_call input and NOT a workflow_dispatch one: a human
+  # dispatching release.yml must not be able to claim to be a scheduled rebuild
+  # and repoint :latest off a branch. There is one entry point for that, and it
+  # is rebuild.yml.
+  run yq -r '.on.workflow_call.inputs.is_rebuild.type' .github/workflows/release.yml
+  [ "$output" = "boolean" ]
+  run yq -r '.on.workflow_dispatch.inputs.is_rebuild // "absent"' .github/workflows/release.yml
+  [ "$output" = "absent" ]
+}
+
+@test "workflows: the rebuild does not duplicate the release orchestration (§9.3)" {
+  # The whole design. If rebuild.yml grows its own build/merge/repoint jobs
+  # there are two definitions of how a LaraOCI release is assembled, and the one
+  # that rots is the one no human watches every week.
+  run yq -r '[.jobs | to_entries | .[] | select(.value.uses != null) | .value.uses] | join(",")' \
+    .github/workflows/rebuild.yml
+  [[ "$output" == *"./.github/workflows/release.yml"* ]]
+  # And no job of its own may build, merge or repoint.
+  run bash -c "yq -r '.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.run // \"\") | test(\"imagetools create|buildx build\"))] | length > 0)
+    | .key' .github/workflows/rebuild.yml"
+  [ -z "$output" ]
+}
+
+@test "workflows: the rebuild declares itself a rebuild and stamps the cache (🧭 1, 🧭 2)" {
+  run yq -r '.jobs.rebuild.with.is_rebuild | tostring' .github/workflows/rebuild.yml
+  [ "$output" = "true" ]
+  run yq -r '.jobs.rebuild.with.rebuild_stamp' .github/workflows/rebuild.yml
+  [[ "$output" == *"stamp"* ]]
+  # It must NEVER ask for a deprecated version (§13, trap 2).
+  run yq -r '.jobs.rebuild.with.include_deprecated // "absent"' .github/workflows/rebuild.yml
+  [ "$output" = "absent" ]
+}
+
+@test "workflows: exactly one job in the rebuild reads the clock (🧭 2's rule)" {
+  # Same reasoning as release.yml's prepare: 36 legs must agree on one stamp. A
+  # second read splits the rebuild across a midnight boundary and builds runtime's
+  # two architectures against two different package sets.
+  run yq -r '[.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.run // "") | test("date -u"))] | length > 0)
+    | .key] | join(",")' .github/workflows/rebuild.yml
+  [ "$output" = "stamp" ]
+}
+
+@test "workflows: a manual rebuild cannot repoint production without saying so" {
+  # THE GATE 2 FOOTGUN, in this workflow's shape. A scheduled run SHOULD repoint
+  # ghcr.io/laraoci/* - that is §9.3. A HUMAN pressing "Run workflow" with the
+  # namespace left blank would do the same thing by accident, on a workflow whose
+  # entire purpose is to move :latest. The confirmation string is the difference
+  # between the two, and it is checked in the first job, before any leg starts.
+  local body
+  body="$(yq -r '.jobs.guard.steps[] | select(.id == "confirm") | .run' \
+    .github/workflows/rebuild.yml)"
+  [[ "$body" == *"REPOINT-PRODUCTION"* ]]
+  [[ "$body" == *"exit 1"* ]]
+}
+
+@test "workflows: the rebuild queues rather than cancels (§8)" {
+  # Cancelling mid-publish is how a manifest list ends up missing an
+  # architecture - the same reason release.yml never cancels.
+  run yq -r '.concurrency."cancel-in-progress" | tostring' .github/workflows/rebuild.yml
+  [ "$output" = "false" ]
+}
+
+@test "workflows: a failed rebuild reports, and reporting cannot be skipped (§9.3)" {
+  # `needs: rebuild` alone would SKIP this job when the rebuild fails, which is
+  # the only time it matters. always() is load-bearing, not defensive.
+  run yq -r '.jobs.report.if' .github/workflows/rebuild.yml
+  [[ "$output" == *"always()"* ]]
+  run yq -r '.jobs.report.needs | tostring' .github/workflows/rebuild.yml
+  [[ "$output" == *"rebuild"* ]]
+  run yq -r '.jobs.report.permissions.issues' .github/workflows/rebuild.yml
+  [ "$output" = "write" ]
+}
+
+@test "workflows: the rebuild files ONE reusable issue, not one per week (🧭 3)" {
+  local body
+  body="$(yq -r '.jobs.report.steps[] | select(.id == "issue") | .run' \
+    .github/workflows/rebuild.yml)"
+  # Found-and-updated: it must LOOK before it creates, or an unfixable CVE opens
+  # 52 issues a year and the tracker stops being read.
+  [[ "$body" == *"gh issue list"* ]]
+  [[ "$body" == *"gh issue comment"* ]]
+  [[ "$body" == *"gh issue create"* ]]
+  # And the other half of "reflects current state": it closes when the scan
+  # passes again.
+  [[ "$body" == *"gh issue close"* ]]
+}
+
+@test "workflows: the rebuild's issue names WHICH legs failed, not just that it failed" {
+  # "the rebuild failed" sends a human to the Actions tab to find out what
+  # happened; an issue that names the failing legs and distinguishes a SCAN
+  # failure from a BUILD failure is one they can triage from the notification.
+  local body
+  body="$(yq -r '.jobs.report.steps[] | select(.id == "legs") | .run' \
+    .github/workflows/rebuild.yml)"
+  [[ "$body" == *"actions/runs"* ]]
+  [[ "$body" == *"Vulnerability gate"* ]]
 }
