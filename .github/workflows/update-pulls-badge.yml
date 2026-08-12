@@ -34,7 +34,7 @@ jobs:
 
           for img in "${images[@]}"; do
             pulls=$(gh api \
-              /users/laraoci/packages/container/"$img" \
+              /orgs/laraoci/packages/container/"$img" \
               --jq '.download_count')
 
             echo "$img: $pulls"
@@ -45,10 +45,7 @@ jobs:
 
           cat > .github/badges/docker-pulls.json <<EOF
           {
-            "schemaVersion": 1,
-            "label": "Docker pulls",
             "message": "$total",
-            "color": "blue"
           }
           EOF
 

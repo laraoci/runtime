@@ -243,10 +243,21 @@ jobs:
         id: suffix
         env:
           LARAOCI_REGISTRY: ${{ steps.ns.outputs.registry }}
+          INCLUDE_DEPRECATED: ${{ inputs.include_deprecated }}
         run: |
           set -euo pipefail
+          # THE PROBE MUST COVER WHAT THIS RELEASE WILL WRITE (§8). The suffix is
+          # "the first date not already taken by ANY image x php this release
+          # publishes". Probing a narrower set than the matrix builds is how a
+          # release picks -20260817 while runtime:8.5-trixie-20260817 already
+          # exists - and §8 forbids overwriting a dated tag, irreversibly. So
+          # this flag tracks the matrix's, and the two are set from one input.
+          flag=()
+          if [ "$INCLUDE_DEPRECATED" = "true" ]; then
+            flag=(--include-deprecated)
+          fi
           today="$(date -u +%Y%m%d)"
-          suffix="$(bin/next-dated-suffix.sh --date "$today")"
+          suffix="$(bin/next-dated-suffix.sh --date "$today" "${flag[@]}")"
           echo "::notice::this release is ${suffix}"
           echo "dated_suffix=${suffix}" >> "$GITHUB_OUTPUT"
 
@@ -255,15 +266,30 @@ jobs:
       # image x php set, so there is no second selector to keep in step.
       - name: Build the staged matrices
         id: legs
+        env:
+          INCLUDE_DEPRECATED: ${{ inputs.include_deprecated }}
         run: |
           set -euo pipefail
+          # §13. A deliberate release may include a `deprecated` version; the
+          # SCHEDULED rebuild never can - rebuild.yml passes nothing here and the
+          # input defaults false, so the cron path cannot reach this branch.
+          #
+          # Publishing a deprecated version is loud, because it is rare and
+          # because the operator should see the second half stated: its dated
+          # tags are written, its ROLLING tags are not, and that freeze is
+          # enforced in the repoint job rather than here.
+          flag=()
+          if [ "$INCLUDE_DEPRECATED" = "true" ]; then
+            flag=(--include-deprecated)
+            echo "::warning::publishing DEPRECATED PHP versions - dated tags only, rolling tags stay frozen (§13)"
+          fi
           {
-            echo "d0=$(bin/matrix.sh --depth 0)"
-            echo "d1=$(bin/matrix.sh --depth 1)"
-            echo "d2=$(bin/matrix.sh --depth 2)"
-            echo "m0=$(bin/matrix.sh --depth 0 --platform linux/amd64)"
-            echo "m1=$(bin/matrix.sh --depth 1 --platform linux/amd64)"
-            echo "m2=$(bin/matrix.sh --depth 2 --platform linux/amd64)"
+            echo "d0=$(bin/matrix.sh --depth 0 "${flag[@]}")"
+            echo "d1=$(bin/matrix.sh --depth 1 "${flag[@]}")"
+            echo "d2=$(bin/matrix.sh --depth 2 "${flag[@]}")"
+            echo "m0=$(bin/matrix.sh --depth 0 --platform linux/amd64 "${flag[@]}")"
+            echo "m1=$(bin/matrix.sh --depth 1 --platform linux/amd64 "${flag[@]}")"
+            echo "m2=$(bin/matrix.sh --depth 2 --platform linux/amd64 "${flag[@]}")"
           } >> "$GITHUB_OUTPUT"
 
   # --- depth 0: runtime -------------------------------------------------------
@@ -503,7 +529,23 @@ jobs:
               fi
               printf '%s\t%s\t%s\n' "$image" "$php" "$dated" >> /tmp/repoint.tsv
               echo "${dated} -> ${digest}"
-            done < <(yq -r '.php | to_entries | .[] | select(.value.status != "deprecated") | .key' config/images.yml)
+              # NO FLAG HERE, EVER (§13, effect 2). THIS IS THE ROLLING-TAG
+              # FREEZE. A deprecated version's dated tags were written by the
+              # merge jobs above and are permanent; its :8.x and :8.x-trixie do
+              # not move, on any path - including a release an operator
+              # deliberately opted into. That opt-in is unreachable from this job
+              # by construction.
+              #
+              # The input is not named anywhere in this job, prose included, and
+              # that is not squeamishness: tests/unit/workflows.bats asserts the
+              # token is absent from the WHOLE job rather than from its code, so
+              # that the assertion cannot be satisfied by moving a reference into
+              # a comment. A blunt check is the point.
+              #
+              # Through bin/php-versions.sh rather than an inline yq: this filter
+              # IS the freeze, and a filter that load-bearing should not be a
+              # string duplicated in YAML that no unit test can reach.
+            done < <(bin/php-versions.sh)
           done < <(yq -r '.images | keys | .[]' config/images.yml)
 
           [ "$missing" -eq 0 ] || exit 1
@@ -562,6 +604,7 @@ jobs:
 
       - name: Compose the published-artifact table
         env:
+          INCLUDE_DEPRECATED: ${{ inputs.include_deprecated }}
           DATED_SUFFIX: ${{ needs.prepare.outputs.dated_suffix }}
           LARAOCI_REGISTRY: ${{ needs.prepare.outputs.registry }}
         run: |
@@ -569,6 +612,17 @@ jobs:
           # A release note that lists tags without digests is a list of names.
           # §8 recommends digests for production, so the release that recommends
           # it prints them.
+          #
+          # THE TABLE FOLLOWS THE INPUT, unlike the repoint (§13). A version this
+          # release actually published belongs in the list of what it published -
+          # omitting it would make the release notes disagree with the registry.
+          # Both calls below need the flag: the version list, and
+          # bin/release-tags.sh, which refuses a deprecated version's tags
+          # without it.
+          flag=()
+          if [ "$INCLUDE_DEPRECATED" = "true" ]; then
+            flag=(--include-deprecated)
+          fi
           {
             echo "## Published images"
             echo
@@ -577,11 +631,11 @@ jobs:
             while IFS= read -r image; do
               while IFS= read -r php; do
                 dated="$(bin/release-tags.sh --image "$image" --php "$php" \
-                  --kind immutable --dated-suffix "$DATED_SUFFIX" | head -n1)"
+                  --kind immutable --dated-suffix "$DATED_SUFFIX" "${flag[@]}" | head -n1)"
                 digest="$(docker buildx imagetools inspect "$dated" --format '{{.Manifest.Digest}}')"
                 # shellcheck disable=SC2016  # the backticks are markdown code spans, not substitution
                 printf '| %s | `%s` | `%s` |\n' "$image" "${dated##*:}" "$digest"
-              done < <(yq -r '.php | to_entries | .[] | select(.value.status != "deprecated") | .key' config/images.yml)
+              done < <(bin/php-versions.sh "${flag[@]}")
             done < <(yq -r '.images | keys | .[]' config/images.yml)
             echo
             echo "Verify any of them: see the supply-chain section of the README."

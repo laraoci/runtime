@@ -72,8 +72,20 @@ jobs:
           # legitimately builds one platform, or a third platform added to the
           # defaults, must not need an edit here. A hardcoded 2 fails the first
           # case on an immutable-tag boundary and under-asserts the second.
+          #
+          # --include-deprecated UNCONDITIONALLY, and it is not a policy hole
+          # (§13). MERGE IS ASSEMBLY, NOT POLICY: whether this version publishes
+          # at all was decided upstream in `prepare`, and by the time this job
+          # runs its build legs have already pushed their digests. Without the
+          # flag a deliberate release of a deprecated version (release.yml's
+          # include_deprecated) dies HERE - matrix.sh returns zero platforms and
+          # the step below exits 1 - so the version's legs would build, push,
+          # and then never receive a dated tag. The freeze is untouched: every
+          # tag this job asks for is `--kind immutable`, and bin/release-tags.sh
+          # refuses the rolling forms for a deprecated version whatever flags it
+          # is given.
           mapfile -t want < <(bin/matrix.sh --image "$IMAGE" --php "$PHP" \
-            | jq -r '.include[].platform')
+            --include-deprecated | jq -r '.include[].platform')
           if [ "${#want[@]}" -eq 0 ]; then
             echo "::error::bin/matrix.sh returned no platform for ${IMAGE} ${PHP}" >&2
             exit 1
@@ -154,7 +166,8 @@ jobs:
             [ -z "$ref" ] && continue
             tags+=(-t "$ref")
           done < <(bin/release-tags.sh --image "$IMAGE" --php "$PHP" \
-            --kind immutable --dated-suffix "$DATED_SUFFIX" --patch "$PATCH")
+            --kind immutable --dated-suffix "$DATED_SUFFIX" --patch "$PATCH" \
+            --include-deprecated)
 
           sources=()
           for f in /tmp/digests/*; do
@@ -171,7 +184,7 @@ jobs:
           # disagree with itself. head -n1 takes the php-suite-dated form; the
           # patch+dated form is the second line.
           dated="$(bin/release-tags.sh --image "$IMAGE" --php "$PHP" \
-            --kind immutable --dated-suffix "$DATED_SUFFIX" | head -n1)"
+            --kind immutable --dated-suffix "$DATED_SUFFIX" --include-deprecated | head -n1)"
           digest="$(docker buildx imagetools inspect "$dated" --format '{{.Manifest.Digest}}')"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "dated=${dated}" >> "$GITHUB_OUTPUT"

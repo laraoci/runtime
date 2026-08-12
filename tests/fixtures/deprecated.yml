@@ -1,6 +1,10 @@
 version: 1
 defaults:
   registry: ghcr.io/laraoci
+  # Without this every tag this fixture produces carries the literal suite
+  # `null` - readable in a jq dump, invisible in an assertion, and a trap for
+  # anyone writing a test that expects a reference shaped like a real one.
+  debian: trixie
   platforms: [linux/amd64, linux/arm64]
   runners: { linux/amd64: ubuntu-24.04, linux/arm64: ubuntu-24.04-arm }
 php:

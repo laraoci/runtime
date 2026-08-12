@@ -1,6 +1,6 @@
 # LaraOCI
 
-![Docker pulls](https://raw.githubusercontent.com/laraoci/runtime/main/.github/badges/docker-pulls.json)
+![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Flaraoci%2Fruntime%2Fmain%2F.github%2Fbadges%2Fdocker-pulls.json&query=%24.message&label=Docker%20pulls&color=blue)
 
 Production-ready OCI images for Laravel applications: secure defaults, a single
 shared runtime layer, and a maintained security posture. You bring `vendor/` and

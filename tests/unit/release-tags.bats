@@ -68,3 +68,32 @@ setup() {
   run bash -c "release-tags.sh --image fpm --php 9.9 --kind rolling"
   [ "$status" -eq 2 ]
 }
+
+@test "release-tags: a deprecated version's ROLLING tags are refused (§13, effect 2)" {
+  # THE FREEZE, at the one place every rolling tag is minted. --include-deprecated
+  # does NOT unlock this: a deliberate release of a deprecated version publishes
+  # immutable dated tags, and its :8.5 / :8.5-trixie stay exactly where the
+  # deprecation left them. A half-deprecation that stopped the rebuild but let a
+  # manual release move the rolling tag would be the worst of both.
+  run bash -c "CONFIG=tests/fixtures/deprecated.yml bin/release-tags.sh --image runtime --php 8.5 --kind rolling"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"frozen"* ]]
+  run bash -c "CONFIG=tests/fixtures/deprecated.yml bin/release-tags.sh --image runtime --php 8.5 --kind rolling --include-deprecated"
+  [ "$status" -eq 2 ]
+  run bash -c "CONFIG=tests/fixtures/deprecated.yml bin/release-tags.sh --image runtime --php 8.5 --kind all --include-deprecated"
+  [ "$status" -eq 2 ]
+}
+
+@test "release-tags: a deliberate release of a deprecated version can still publish (§13)" {
+  # The other half of trap 2. Deprecation stops the SCHEDULE; it does not forbid
+  # a release someone explicitly asked for. Without this, a security backport to
+  # a version in its wind-down could not be shipped at all.
+  run bash -c "CONFIG=tests/fixtures/deprecated.yml bin/release-tags.sh --image runtime --php 8.5 --kind immutable --dated-suffix -20260817 --include-deprecated"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"runtime:8.5-trixie-20260817"* ]]
+}
+
+@test "release-tags: without the flag, a deprecated version is still refused" {
+  run bash -c "CONFIG=tests/fixtures/deprecated.yml bin/release-tags.sh --image runtime --php 8.5 --kind immutable --dated-suffix -20260817"
+  [ "$status" -eq 2 ]
+}

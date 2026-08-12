@@ -141,3 +141,10 @@ setup() {
   run bash -c "bin/matrix.sh --depth 1 --platform linux/amd64 | jq '.include | length'"
   [ "$output" -eq 9 ]
 }
+
+@test "matrix: --include-deprecated puts a deprecated version back in the matrix" {
+  run bash -c "CONFIG=tests/fixtures/deprecated.yml bin/matrix.sh --include-deprecated | jq '.include | length'"
+  [ "$output" -eq 36 ]
+  run bash -c "CONFIG=tests/fixtures/deprecated.yml bin/matrix.sh --include-deprecated | jq -e '[.include[].php] | index(\"8.5\") != null'"
+  [ "$status" -eq 0 ]
+}
