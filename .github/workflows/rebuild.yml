@@ -155,3 +155,144 @@ jobs:
       # version stops receiving scheduled rebuilds. include_deprecated is
       # reachable only from a human's workflow_dispatch of release.yml.
     secrets: inherit
+
+# --- nobody is watching a cron run (§9.3, 🧭 3) -----------------------------
+
+  report:
+    needs: [ guard, rebuild ]
+    # always(), because `needs: rebuild` alone SKIPS this job when the rebuild
+    # fails - which is the only time §9.3 asks for anything.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The narrowest scope that can file and close. Deliberately NOT on the
+      # `rebuild` job: 36 build legs do not need to be able to write issues.
+      issues: write
+      # Reading the run's own job list to name the failing legs.
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      RESULT: ${{ needs.rebuild.result }}
+      NAMESPACE: ${{ needs.guard.outputs.registry_namespace }}
+      # ONE STABLE LABEL IS THE KEY, not the title. A title drifts the first time
+      # someone edits it by hand; a label is a repo object that either matches or
+      # does not.
+      LABEL: scheduled-rebuild
+      TITLE: "Scheduled rebuild is failing"
+    steps:
+      - name: Name the failing legs, and say whether it was the scan
+        id: legs
+        run: |
+          set -euo pipefail
+          : > /tmp/legs.txt
+          scan_failed=false
+          if [ "$RESULT" != "success" ]; then
+            # The run's own job list, one line per failed STEP. The job name
+            # carries the leg identity (image, php, platform) because the matrix
+            # puts it there, so this is enough to triage without opening the tab.
+            # shellcheck disable=SC2016  # $j is a jq variable bound by `. as $j`, not a shell one - expanding it here would blank the program
+            gh api --paginate \
+              "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+              --jq '.jobs[] | select(.conclusion == "failure") | . as $j
+                    | $j.steps[]? | select(.conclusion == "failure")
+                    | "- `\($j.name)` -> **\(.name)**"' > /tmp/legs.txt || true
+            # §9.3 singles out a SCAN failure, so the issue says which kind this
+            # was rather than making a human infer it. The step name is the one
+            # in build.yml; workflows.bats asserts this string is present so a
+            # rename over there fails a test here rather than silently
+            # reclassifying every future failure as "build".
+            if grep -q 'Vulnerability gate' /tmp/legs.txt; then
+              scan_failed=true
+            fi
+          fi
+          echo "scan_failed=${scan_failed}" >> "$GITHUB_OUTPUT"
+          wc -l < /tmp/legs.txt
+
+      - name: Find, open, update or close the one rebuild issue
+        id: issue
+        env:
+          SCAN_FAILED: ${{ steps.legs.outputs.scan_failed }}
+        run: |
+          set -euo pipefail
+
+          # THE LABEL MUST EXIST BEFORE `gh issue create --label` IS CALLED, or
+          # it fails with a 422 and the run that was already failing fails again
+          # for an unrelated reason. Checked rather than `|| true`-d, so a real
+          # permission problem is still loud.
+          if [ -z "$(gh label list --repo "$REPO" --search "$LABEL" \
+                       --json name --jq ".[] | select(.name == \"${LABEL}\") | .name")" ]; then
+            gh label create "$LABEL" --repo "$REPO" \
+              --color B60205 \
+              --description "The weekly rebuild (spec §9.3) is not publishing"
+          fi
+
+          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
+            --limit 1 --json number --jq '.[0].number // ""')"
+
+          if [ "$RESULT" = "success" ]; then
+            # THE OTHER HALF OF 🧭 3, and the half that is easy to forget. An
+            # issue that is only ever opened accumulates into a list of things
+            # that used to be true. Closing it when the rebuild next passes is
+            # what makes "is the rebuild broken right now" answerable by looking
+            # at one issue instead of reading a year of them.
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" \
+                --body "Rebuild passed on ${RUN_URL}. Closing."
+              gh issue close "$existing" --repo "$REPO" \
+                --reason completed
+              echo "::notice::closed #${existing} - the rebuild is publishing again"
+            else
+              echo "::notice::rebuild succeeded and no issue was open"
+            fi
+            exit 0
+          fi
+
+          kind="build or publish"
+          if [ "$SCAN_FAILED" = "true" ]; then
+            kind="vulnerability scan"
+          fi
+
+          {
+            echo "The weekly rebuild (spec §9.3) did not publish."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Run | ${RUN_URL} |"
+            echo "| Result | \`${RESULT}\` |"
+            echo "| First failure | ${kind} |"
+            printf '| Namespace | %s |\n' "${NAMESPACE:-the configured default}"
+            echo
+            echo "**Failing legs**"
+            echo
+            if [ -s /tmp/legs.txt ]; then
+              cat /tmp/legs.txt
+            else
+              echo "- none reported by the API - the run may have failed before any leg started"
+            fi
+            echo
+            echo "Nothing was published and no rolling tag moved: the repoint is gated on"
+            echo "\`release-required\`, so a partial matrix leaves every rolling tag where it was."
+            echo
+            echo "This issue is **reused** rather than reopened weekly (🧭 3, D46). It is"
+            echo "commented on each week it keeps failing and closed automatically the first"
+            echo "week the rebuild passes."
+          } > /tmp/body.md
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file /tmp/body.md
+            echo "::error::the weekly rebuild failed (${kind}) - updated #${existing}"
+          else
+            number="$(gh issue create --repo "$REPO" --label "$LABEL" \
+              --title "$TITLE" --body-file /tmp/body.md \
+              | grep -oE '[0-9]+$')"
+            echo "::error::the weekly rebuild failed (${kind}) - opened #${number}"
+          fi
+
+          # LOUD. §9.3 says the run FAILS as well as filing. A green report job
+          # on a red rebuild is a notification nobody gets.
+          exit 1

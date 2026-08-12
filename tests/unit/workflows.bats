@@ -898,3 +898,39 @@ hadolint_step() {
   run yq -r '.concurrency."cancel-in-progress" | tostring' .github/workflows/rebuild.yml
   [ "$output" = "false" ]
 }
+
+@test "workflows: a failed rebuild reports, and reporting cannot be skipped (§9.3)" {
+  # `needs: rebuild` alone would SKIP this job when the rebuild fails, which is
+  # the only time it matters. always() is load-bearing, not defensive.
+  run yq -r '.jobs.report.if' .github/workflows/rebuild.yml
+  [[ "$output" == *"always()"* ]]
+  run yq -r '.jobs.report.needs | tostring' .github/workflows/rebuild.yml
+  [[ "$output" == *"rebuild"* ]]
+  run yq -r '.jobs.report.permissions.issues' .github/workflows/rebuild.yml
+  [ "$output" = "write" ]
+}
+
+@test "workflows: the rebuild files ONE reusable issue, not one per week (🧭 3)" {
+  local body
+  body="$(yq -r '.jobs.report.steps[] | select(.id == "issue") | .run' \
+    .github/workflows/rebuild.yml)"
+  # Found-and-updated: it must LOOK before it creates, or an unfixable CVE opens
+  # 52 issues a year and the tracker stops being read.
+  [[ "$body" == *"gh issue list"* ]]
+  [[ "$body" == *"gh issue comment"* ]]
+  [[ "$body" == *"gh issue create"* ]]
+  # And the other half of "reflects current state": it closes when the scan
+  # passes again.
+  [[ "$body" == *"gh issue close"* ]]
+}
+
+@test "workflows: the rebuild's issue names WHICH legs failed, not just that it failed" {
+  # "the rebuild failed" sends a human to the Actions tab to find out what
+  # happened; an issue that names the failing legs and distinguishes a SCAN
+  # failure from a BUILD failure is one they can triage from the notification.
+  local body
+  body="$(yq -r '.jobs.report.steps[] | select(.id == "legs") | .run' \
+    .github/workflows/rebuild.yml)"
+  [[ "$body" == *"actions/runs"* ]]
+  [[ "$body" == *"Vulnerability gate"* ]]
+}
