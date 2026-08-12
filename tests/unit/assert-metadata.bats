@@ -161,3 +161,17 @@ index_config() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"carries no linux/amd64"* ]]
 }
+
+@test "assert-metadata: a manifest-list key carrying a variant still matches" {
+  # The single-platform branch was explicitly hardened against this - the matrix
+  # speaks in linux/arm64 while a config may carry variant v8 - and the
+  # manifest-list branch passes the registry's keys straight through. Whether
+  # buildx renders linux/arm64 or linux/arm64/v8 is a property of the
+  # descriptors, not of this repo, so it must not decide whether a release ships.
+  local labels
+  labels='{"org.opencontainers.image.source":"x","org.opencontainers.image.revision":"x","org.opencontainers.image.created":"x","org.opencontainers.image.version":"x","org.opencontainers.image.licenses":"x","org.opencontainers.image.description":"x","org.opencontainers.image.documentation":"x","org.opencontainers.image.base.name":"x","org.opencontainers.image.base.digest":"x"}'
+  run bash -c "LARAOCI_INSPECT_CMD='printf %s '\''{\"linux/amd64\":{\"os\":\"linux\",\"architecture\":\"amd64\",\"config\":{\"StopSignal\":\"SIGQUIT\",\"Labels\":${labels}}},\"linux/arm64/v8\":{\"os\":\"linux\",\"architecture\":\"arm64\",\"variant\":\"v8\",\"config\":{\"StopSignal\":\"SIGQUIT\",\"Labels\":${labels}}}}'\''' \
+    assert-metadata.sh --image fpm --ref test:tag --source registry \
+      --platform linux/amd64 --platform linux/arm64"
+  [ "$status" -eq 0 ]
+}

@@ -55,6 +55,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# The L6 guard the other three seams carry (bin/size-check.sh:56,
+# bin/assert-metadata.sh:99, bin/next-dated-suffix.sh:49). This one matters most:
+# LARAOCI_CST_CMD does not replace one reading, it replaces the whole checker, so
+# a value of `true` turns every structure assertion in the repository green - on
+# the push path as well as the PR path - and also disables the "is this image in
+# the daemon" precondition below.
+if [[ -n "${LARAOCI_CST_CMD:-}" && "${LARAOCI_TEST:-0}" != "1" ]]; then
+  echo "error: LARAOCI_CST_CMD is a test-only seam; set LARAOCI_TEST=1 to use it." >&2
+  exit 2
+fi
+
 if [[ -z "$image" ]]; then
   echo "error: --image is required" >&2
   exit 2

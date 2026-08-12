@@ -59,6 +59,15 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    # 18 registry probes for the dated suffix, and nothing else.
+    timeout-minutes: 15
+    # READ, NOT WRITE. This job publishes nothing - it resolves the dated suffix
+    # by asking the registry which dated tags already exist. Without a packages
+    # scope that question is answered with a 401 on every private package, and
+    # bin/next-dated-suffix.sh reads an unanswered question as "the tag is free".
+    permissions:
+      contents: read
+      packages: read
     outputs:
       dated_suffix: ${{ steps.suffix.outputs.dated_suffix }}
       registry: ${{ steps.ns.outputs.registry }}
@@ -283,6 +292,7 @@ jobs:
     needs: [ prepare, build-d0, merge-d0, build-d1, merge-d1, build-d2, merge-d2 ]
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       # Through env:, not interpolated into the run: body (H1). These are
       # trusted result enums, but the rule is blunt on purpose.
@@ -322,6 +332,9 @@ jobs:
     needs: [ prepare, release-required ]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
+    # 18 resolves then 42 rolling-tag writes. The only irreversible job here,
+    # so it gets room without getting the default.
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -401,8 +414,13 @@ jobs:
     needs: [ prepare, release-required ]
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
+      # The published-artifact table inspects every dated manifest. Unlike
+      # prepare, this one fails loudly without the scope - a red notes job after
+      # a fully successful publish - but it fails all the same.
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

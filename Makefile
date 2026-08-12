@@ -53,13 +53,13 @@ test: ## Run the unit test suite under the pinned bats
 	$(BATS) tests/unit
 
 lint: ## shellcheck every tracked shell script, under the pinned shellcheck
-	$(SHELLCHECK) -S warning $$(git ls-files '*.sh')
+	$(SHELLCHECK) -S warning $$(git ls-files '*.sh' '*.bash')
 
 fmt: ## Check shell formatting (no changes)
-	$(TOOLS_BIN)/shfmt -d -i 2 -ci $$(git ls-files '*.sh')
+	$(TOOLS_BIN)/shfmt -d -i 2 -ci $$(git ls-files '*.sh' '*.bash')
 
 fmt-fix: ## Apply shell formatting in place
-	$(TOOLS_BIN)/shfmt -w -i 2 -ci $$(git ls-files '*.sh')
+	$(TOOLS_BIN)/shfmt -w -i 2 -ci $$(git ls-files '*.sh' '*.bash')
 
 matrix: ## Print the full CI build matrix as JSON
 	bin/matrix.sh

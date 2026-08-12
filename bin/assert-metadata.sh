@@ -139,7 +139,19 @@ configs="$(jq -c --arg ref "$ref" '
     # may also carry variant v8, and `linux/arm64/v8` would miss just as badly.
     {("\(.os)/\(.architecture)"): .}
   else
-    with_entries(select(.key | test("^unknown/") | not))
+    # `unknown/unknown` entries are dropped - BuildKit attaches the SBOM and the
+    # provenance as manifests carrying that platform, they have no image config,
+    # and treating one as a platform would fail every signed image for labels it
+    # was never supposed to have.
+    #
+    # The variant is stripped for the reason the single-platform branch above
+    # builds its key without one: the matrix speaks in `linux/arm64`, and whether
+    # a registry renders the descriptor as `linux/arm64` or `linux/arm64/v8` is
+    # not something a release should depend on. os/arch is the whole key.
+    with_entries(
+      select(.key | test("^unknown/") | not)
+      | .key |= (split("/") | .[0:2] | join("/"))
+    )
   end' <<<"$raw")"
 
 if [[ "$(jq -r 'length' <<<"$configs")" == "0" ]]; then

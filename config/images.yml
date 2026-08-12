@@ -77,14 +77,31 @@ size_budgets:
   #   runtime   2026-07-27  linux/amd64  227.6    230.5    232.6     260
   #   cli       2026-07-28  linux/amd64  227.55   230.53   232.62    260
   #   fpm       2026-07-28  linux/amd64  228.02   230.99   233.08    260
-  #   builder   2026-07-28  linux/amd64  294.03   297.00   299.11    330
+  #   builder   2026-08-11  linux/amd64  307.22   310.19   312.29    345
   #   queue     2026-07-31  linux/amd64  227.58   230.55   232.66    260
   #   scheduler 2026-07-31  linux/amd64  227.57   230.55   232.66    260
+  #
+  # BOTH ARCHITECTURES ARE NOW MEASURED, and the arch column above still reads
+  # linux/amd64 because amd64 is the LARGER one on every image - by a
+  # near-constant 11.06-11.50 MB, measured natively on ubuntu-24.04-arm, no
+  # emulation (D3a). A budget is one scalar covering both legs, so the larger
+  # architecture sets it, and arm64 enforcement therefore added no new risk.
+  # The eighteen arm64 figures are in docs/size-report-m4.md.
+  #
+  # builder's row is the ONE re-freeze in M4: 330 -> 345, on 2026-08-11. It did
+  # not fail - 312.29 against 330 passed with room - but D42's npm 12.0.2
+  # upgrade added a flat +13.19 MB (consistent to 0.01 MB across all three
+  # versions, which is what identifies it as a fixed addition rather than
+  # drift), leaving 5.7% headroom where the formula intends 10%. Re-frozen BY
+  # THE FORMULA rather than nudged to the smallest passing value: fitting a
+  # budget to the build is how the margin that absorbs Debian drift between
+  # weekly rebuilds (§9.3) gets spent without anyone deciding to spend it.
   #
   # runtime's three numbers and the Ghostscript/-extra deltas behind them are in
   # docs/size-report-m1.md; cli's, fpm's and builder's nine, and what each image
   # adds over its parent, are in docs/size-report-m2.md. The six above them -
-  # queue's and scheduler's - belong to the M3 report.
+  # queue's and scheduler's - belong to the M3 report. All 36 of M4's, both
+  # architectures, are in docs/size-report-m4.md.
   #
   # FIVE OF THE SIX LANDING ON runtime's OWN 260 IS THE CORRECT OUTCOME, not a
   # copy-paste error. cli adds ENV and CMD - zero bytes, and its measurements
@@ -111,7 +128,7 @@ size_budgets:
   runtime: 260
   cli: 260
   fpm: 260
-  builder: 330
+  builder: 345
   queue: 260
   scheduler: 260
 

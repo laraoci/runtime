@@ -563,3 +563,134 @@ hadolint_step() {
     }
   done
 }
+
+@test "workflows: every release job that logs in to GHCR declares a packages scope" {
+  # A job that logs in and then reads a manifest with packages: none gets a 401,
+  # and `imagetools inspect` reports a 401 the same way it reports a 404: exit 1.
+  # bin/next-dated-suffix.sh turns that into "the dated tag is free", which is how
+  # a release overwrites an immutable tag. The scope is the half of that fix that
+  # lives here.
+  local jobs job scope
+  jobs="$(yq -r '.jobs | to_entries | .[]
+    | select([.value.steps[]? | select((.uses // "") | test("docker/login-action"))] | length > 0)
+    | .key' .github/workflows/release.yml)"
+  [ -n "$jobs" ]
+  for job in $jobs; do
+    scope="$(JOB="$job" yq -r '.jobs[strenv(JOB)].permissions.packages // "ABSENT"' \
+      .github/workflows/release.yml)"
+    if [ "$scope" = "ABSENT" ]; then
+      echo "release.yml job '$job' logs in to GHCR but declares no packages scope." >&2
+      echo "A denied read is indistinguishable from a 404 - see bin/next-dated-suffix.sh." >&2
+      false
+    fi
+  done
+}
+
+@test "workflows: trivy is installed on every path that uses it" {
+  # The install was gated on structure_test while two of the three consumers -
+  # the SARIF scan and the hard gate - are gated on push. A caller with
+  # push: true, structure_test: false would reach the security gate and die on
+  # `trivy: command not found`: the gate failing for a reason that is not a CVE.
+  local install
+  install="$(yq -r '.jobs.build.steps[]
+    | select((.name // "") | test("Install the pinned trivy"))
+    | .if' .github/workflows/build.yml)"
+  [ -n "$install" ]
+  [[ "$install" == *"inputs.push"* ]]
+  [[ "$install" == *"inputs.structure_test"* ]]
+  [[ "$install" == *"||"* ]]
+}
+
+@test "workflows: merge.yml never re-derives a tag from defaults.debian" {
+  # release-tags.sh resolves the suite as "per-version debian: override, falling
+  # back to defaults.debian" (§3.1). merge.yml reconstructed the dated tag by
+  # reading defaults.debian directly, so the two agree only while no version
+  # carries an override - the transition mechanism the override exists for.
+  #
+  # COMMENTS ARE STRIPPED FIRST - whole-line AND trailing, the same two
+  # expressions the smoke-matrix test above uses, for the same reason. The
+  # comment that explains why the code no longer derives a suite this way has to
+  # name the thing it no longer does. Without the exemption this test forbids
+  # its own justification, and the way to make it pass is to delete the
+  # explanation - which is the opposite of the point.
+  local bodies
+  bodies="$(run_bodies .github/workflows/merge.yml \
+    | sed -E -e '/^[[:space:]]*#/d' -e 's/[[:space:]]+#.*$//')"
+  if grep -q 'defaults\.debian' <<<"$bodies"; then
+    echo "merge.yml derives a suite from defaults.debian; use bin/release-tags.sh:" >&2
+    grep -n 'defaults\.debian' <<<"$bodies" >&2
+    false
+  fi
+}
+
+@test "workflows: merge.yml takes its platform set from config, not a literal" {
+  # config/images.yml owns defaults.platforms, and bin/lib/common.sh reads and
+  # validates a per-image platforms: override that bin/matrix.sh honours.
+  # merge.yml hardcoded both the count (2) and the names, so a single-platform
+  # image would fail the merge on an immutable-tag boundary and a third platform
+  # would be published and then silently not asserted.
+  local bodies
+  bodies="$(run_bodies .github/workflows/merge.yml)"
+  if grep -qE '(--platform +linux/|PLATFORM_COUNT)' <<<"$bodies"; then
+    echo "merge.yml names a platform or a platform count literally:" >&2
+    grep -nE '(--platform +linux/|PLATFORM_COUNT)' <<<"$bodies" >&2
+    false
+  fi
+  # And it must actually ask matrix.sh instead.
+  [[ "$bodies" == *"bin/matrix.sh"* ]]
+}
+
+@test "workflows: merge.yml's PLATFORM_COUNT env literal is gone" {
+  run yq -r '[.jobs.merge.steps[] | select(.env.PLATFORM_COUNT != null)] | length' \
+    .github/workflows/merge.yml
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 0 ]
+}
+
+@test "workflows: the actionlint job installs the pinned shellcheck (L5)" {
+  # actionlint lints the shell inside every run: body by shelling out to
+  # shellcheck, and that binary is optional: absent, the rule is skipped in
+  # silence. The job installed actionlint alone, so it resolved shellcheck from
+  # the runner image - either not at all, leaving six workflows' run: bodies
+  # unlinted, or at whatever unpinned version GitHub ships. Both are the drift
+  # this job's own comment says it exists to prevent.
+  local install
+  install="$(yq -r '.jobs.actions.steps[] | select(has("run")) | .run' \
+    .github/workflows/lint.yml)"
+  [[ "$install" == *"fetch-tools.sh"* ]]
+  [[ "$install" == *"shellcheck"* ]]
+  [[ "$install" == *"actionlint"* ]]
+}
+
+@test "workflows: CI and the Makefile select shell scripts the same way" {
+  # The same rule as the Dockerfile-selector test above. `git ls-files '*.sh'`
+  # missed tests/smoke/helpers.bash - 145 lines of ordinary bash sourced by every
+  # smoke suite - so it was neither shellchecked nor shfmt-checked on either path.
+  local ci mk
+  ci="$(run_bodies .github/workflows/lint.yml | grep -c "git ls-files '\*.sh' '\*.bash'" || true)"
+  [ "$ci" -eq 2 ]   # shellcheck and shfmt
+  mk="$(grep -c "git ls-files '\*.sh' '\*.bash'" Makefile || true)"
+  [ "$mk" -eq 3 ]   # lint, fmt, fmt-fix
+}
+
+@test "workflows: every job that runs steps has a timeout" {
+  # smoke.yml already says why: "A hung `compose up --wait` would otherwise burn
+  # the job's full six-hour default before anyone learned the pool never went
+  # healthy." That argument is stronger on the release path - 36 build legs and
+  # 18 merge jobs, every one doing network work, inside a concurrency group that
+  # is deliberately cancel-in-progress: false.
+  #
+  # Jobs that only call a reusable workflow are excluded: the timeout belongs on
+  # the called job, not the caller.
+  local f out
+  for f in .github/workflows/*.yml; do
+    out="$(yq -r '.jobs | to_entries | .[]
+      | select(.value.uses == null)
+      | select(.value["timeout-minutes"] == null) | .key' "$f")"
+    if [ -n "$out" ]; then
+      echo "$f has jobs with no timeout-minutes:" >&2
+      echo "$out" >&2
+      false
+    fi
+  done
+}

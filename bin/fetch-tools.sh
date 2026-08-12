@@ -131,7 +131,16 @@ download_verified() {
   # call. `curl -o` truncates too, but being explicit keeps the ownership rule
   # readable at the one place that could break it again.
   : >"$TMP"
-  curl -fsSL "$1" -o "$TMP"
+  # --retry, because every CI job in this repository starts here and a transient
+  # GitHub Releases blip should not fail one. --max-time, because without it a
+  # hung connection runs to the job's timeout rather than to a sensible bound.
+  # --proto/--proto-redir, because -L follows redirects and there is no reason to
+  # follow one off https - the SHA-256 below makes that harmless for integrity,
+  # not harmless for the credentials a redirect could be pointed at.
+  curl -fsSL \
+    --proto '=https' --proto-redir '=https' \
+    --retry 3 --retry-connrefused --max-time 120 \
+    "$1" -o "$TMP"
   if ! echo "$2  $TMP" | sha256sum -c - >/dev/null 2>&1; then
     echo "error: checksum mismatch for $1" >&2
     echo "       expected: $2" >&2

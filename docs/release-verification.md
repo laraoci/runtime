@@ -1,5 +1,25 @@
 # What the release path must verify
 
+> **Status: discharged in M4 (LOCI-041).** All **four** Required rows below have
+> push-path steps in `.github/workflows/build.yml`, named in the fenced block at
+> the end of this file, and `tests/unit/workflows.bats` fails if one disappears
+> or if this doc starts promising one that does not exist. Both directions are
+> asserted, so the unverified set can only shrink.
+>
+> Four, not the three this document was written with: the vulnerability scan
+> joined them when LOCI-044 added a step gated on `!inputs.push`, and its
+> push-path twin is a hard gate rather than the advisory report the PR path runs.
+>
+> The metadata mechanism differs from the table's description - nothing is
+> pulled for it. See the correction at the end.
+>
+> **Executed, not just asserted.** Release run
+> [`31484096613`](https://github.com/laraoci/runtime/actions/runs/31484096613)
+> ran all four against pushed digests on both architectures: `SIGQUIT` asserted
+> natively on an arm64 `fpm` leg, 35 structure tests passed against a pulled
+> arm64 digest, the size budget enforced on all 36 legs, and the scan gate
+> returned zero findings with `--exit-code 1` armed.
+
 M4 acceptance criteria. Nothing is published yet (D27), so nothing here is a live
 defect - this exists so that none of it becomes one silently the day `push: true`
 is first used. Recorded from the 2026-07-31 code review, findings 7 and 12.

@@ -64,10 +64,18 @@ metadataTest:
       value: /home/laravel/.composer
     - key: NPM_CONFIG_CACHE
       value: /home/laravel/.npm
-    # Explicit rather than assumed. This is what makes composer REFUSE to run as
-    # root instead of printing a warning on every invocation - so a consumer who
-    # builds with `--user 0` finds out immediately rather than accumulating
-    # root-owned files in a cache mount that the laravel user then cannot write.
+    # PINNED AS AN INTERFACE, NOT AS A CONTROL. This assertion says the variable
+    # is present and reads "0"; it does not say that changes Composer's
+    # behaviour, because it does not. Composer tests the variable for
+    # truthiness and "0" is falsy in PHP, so it is identical to unset - and
+    # Composer skips its root check entirely inside a container anyway
+    # (Platform::isDocker(), true whenever /.dockerenv exists). Measured on
+    # Composer 2.10.2; the reasoning and the measurements are in
+    # images/builder/Dockerfile above this ENV.
+    #
+    # This comment used to claim it made composer REFUSE to run as root. It
+    # never did: outside a container the flag gates a warning and an interactive
+    # prompt, and inside one it gates nothing.
     - key: COMPOSER_ALLOW_SUPERUSER
       value: "0"
     # An update check is a network call on a machine that may have no route out,

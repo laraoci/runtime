@@ -93,6 +93,10 @@ on:
 jobs:
   build:
     runs-on: ${{ inputs.runner }}
+    # Generous, because a cold arm64 PHP-extension build with no cache is slow,
+    # and finite, because this job runs 36 times per release inside a
+    # concurrency group that never cancels. The six-hour default is not a bound.
+    timeout-minutes: 90
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
       digest: ${{ steps.build.outputs.digest }}
@@ -210,7 +214,15 @@ jobs:
           {
             echo "base_name=${base_name}"
             echo "base_digest=${digest}"
-            echo "description=$(yq -r ".images.\"${IMAGE}\".description" config/images.yml)"
+            # strenv, matching the parent read twelve lines above and the rule
+            # stated in the Compose build arguments step - an image name that
+            # reaches a query is never interpolated into it.
+            #
+            # tr, matching bin/build-chain.sh: a description is the one free-prose
+            # field in config/images.yml, an OCI label is single-line by
+            # definition, and a newline here would inject extra key=value pairs
+            # into this step's own $GITHUB_OUTPUT - base_digest among them.
+            echo "description=$(IMAGE="$IMAGE" yq -r '.images[strenv(IMAGE)].description // ""' config/images.yml | tr '\n' ' ')"
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
 
@@ -444,7 +456,11 @@ jobs:
           jq -r '[.. | .buildType? // empty] | .[0]' <<<"$prov"
 
       - name: Install the pinned trivy
-        if: ${{ inputs.structure_test }}
+        # BOTH, not either. The advisory PR scan is gated on structure_test; the
+        # SARIF report and the hard gate are gated on push. Installing on only
+        # one of them leaves a caller combination where the security gate fails
+        # as `command not found` - a gate failing for a reason that is not a CVE.
+        if: ${{ inputs.push || inputs.structure_test }}
         run: |
           set -euo pipefail
           # Through the checksum-verifying fetcher, never the marketplace

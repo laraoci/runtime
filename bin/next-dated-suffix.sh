@@ -51,12 +51,35 @@ if [[ -n "${LARAOCI_TAG_EXISTS_CMD:-}" && "${LARAOCI_TEST:-0}" != "1" ]]; then
   exit 2
 fi
 
+# THREE STATES, because "I could not look" is not "it is free".
+#
+#   0  the tag exists
+#   1  the registry answered 404 - the tag is free
+#   2  the question was not answered (401, 403, rate limit, DNS, timeout)
+#
+# `imagetools inspect` reports all four of those the same way: exit 1. Reading
+# that as "free" is how a release overwrites an immutable dated tag, which §8
+# forbids and which cannot be undone. The registry's own words are the only
+# thing that distinguishes them, so they are matched rather than assumed.
+#
+# The seam inherits the contract: exit 0 = exists, exit 1 = absent, anything
+# else = unanswerable.
 tag_exists() {
   if [[ -n "${LARAOCI_TAG_EXISTS_CMD:-}" ]]; then
     bash -c "$LARAOCI_TAG_EXISTS_CMD" _ "$1"
-  else
-    docker buildx imagetools inspect "$1" >/dev/null 2>&1
+    return $?
   fi
+  local out
+  if out="$(docker buildx imagetools inspect "$1" 2>&1)"; then
+    return 0
+  fi
+  case "$out" in
+    *"not found"* | *NAME_UNKNOWN* | *MANIFEST_UNKNOWN* | *"no such manifest"*)
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$out" >&2
+  return 2
 }
 
 registry="${LARAOCI_REGISTRY:-}"
@@ -87,10 +110,26 @@ while :; do
   taken=0
   for image in "${images[@]}"; do
     for php in "${php_versions[@]}"; do
-      if tag_exists "${registry}/${image}:${php}-${php_debian[$php]}${suffix}"; then
-        taken=1
-        break 2
-      fi
+      ref="${registry}/${image}:${php}-${php_debian[$php]}${suffix}"
+      # `|| probe=$?` puts the call in a condition context, which is what keeps
+      # errexit from killing the script on the non-zero returns that ARE the
+      # answer. A bare call would exit on every free tag.
+      probe=0
+      tag_exists "$ref" || probe=$?
+      case "$probe" in
+        0)
+          taken=1
+          break 2
+          ;;
+        1) : ;;
+        *)
+          echo "error: cannot determine whether ${ref} exists - refusing to guess" >&2
+          echo "       a probe that cannot see the registry reads every tag as free," >&2
+          echo "       and §8 forbids overwriting a dated tag. Check the job grants" >&2
+          echo "       packages: read, or that the package is public." >&2
+          exit 1
+          ;;
+      esac
     done
   done
 

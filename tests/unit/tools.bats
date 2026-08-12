@@ -331,3 +331,37 @@ pin_for() {
   done
   [ "$bad" -eq 0 ]
 }
+
+@test "tools: the fetcher's curl retries, times out and stays on https" {
+  # Every CI job in the repository starts by fetching at least one tool through
+  # this call. No retry meant a transient Releases blip failed the job; no
+  # --max-time meant it could hang against the job's default six hours. The
+  # SHA-256 check downstream makes a downgraded redirect harmless for integrity,
+  # but there is no reason to follow one.
+  #
+  # TWO NORMALISATIONS, both load-bearing, and this test failed on the absence of
+  # each before it was written this way:
+  #
+  #   Whole-line comments are dropped, because the block above the call names
+  #   every one of these flags in prose. Grep the raw file and it passes on the
+  #   comment while the call itself is bare - the assertion inverted.
+  #
+  #   Line continuations are joined, because the invocation spans four physical
+  #   lines. A single grepped line sees `curl -fsSL \` and no flag at all.
+  local code
+  code="$(sed -e '/^[[:space:]]*#/d' bin/fetch-tools.sh \
+    | sed -e ':a' -e '/\\$/{N;s/\\\n//;ta' -e '}')"
+
+  # ONE curl in the fetcher, and it is the hardened one. Asserting the flags
+  # without this would still pass if someone added a second, bare invocation.
+  run grep -c 'curl ' <<<"$code"
+  [ "$output" -eq 1 ]
+
+  local cmd
+  cmd="$(grep 'curl ' <<<"$code")"
+  [[ "$cmd" == *"--retry 3"* ]]
+  [[ "$cmd" == *"--retry-connrefused"* ]]
+  [[ "$cmd" == *"--max-time"* ]]
+  [[ "$cmd" == *"--proto '=https'"* ]]
+  [[ "$cmd" == *"--proto-redir '=https'"* ]]
+}

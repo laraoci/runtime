@@ -71,3 +71,25 @@ setup() {
     false
   fi
 }
+
+@test "config: no image description spans more than one line" {
+  # An OCI label is single-line by definition, and build.yml writes this value
+  # into $GITHUB_OUTPUT as `description=<value>`. A literal-block scalar there
+  # injects arbitrary key=value pairs into that step's outputs - including
+  # base_digest, which the same step emits and which feeds both the BASE_DIGEST
+  # build argument and org.opencontainers.image.base.digest.
+  run yq -r '.images | to_entries | .[]
+    | select((.value.description // "") | test("\n")) | .key' config/images.yml
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "config: the ImageMagick policy contains no backtick" {
+  # policy.xml's own header: ImageMagick's policy reader is a hand-rolled
+  # tokenizer, not an XML parser. A backtick anywhere - including inside a
+  # comment - is read as a string delimiter, the rest of the file is swallowed,
+  # and an EMPTY policy loads. An empty policy allows everything, and nothing
+  # warns. The build's live canary catches it; this catches it sooner and free.
+  run grep -c '`' config/imagemagick/policy.xml
+  [ "$output" -eq 0 ]
+}

@@ -31,6 +31,7 @@ jobs:
   # apply, so all three agree by construction.
   matrix:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       versions: ${{ steps.gen.outputs.versions }}
     steps:
@@ -152,6 +153,7 @@ jobs:
     needs: [ matrix, smoke ]
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       # Via env:, not interpolated into run: (repo H1 rule). Trusted enums, but
       # the standard is honoured without exception.
