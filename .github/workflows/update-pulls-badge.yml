@@ -12,13 +12,15 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Calculate total pulls
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           images=(
             runtime
             cli
@@ -31,8 +33,8 @@ jobs:
           total=0
 
           for img in "${images[@]}"; do
-            pulls=$(gh api\
-              /users/laraoci/packages/container/$img \
+            pulls=$(gh api \
+              /users/laraoci/packages/container/"$img" \
               --jq '.download_count')
 
             echo "$img: $pulls"
@@ -52,6 +54,7 @@ jobs:
 
       - name: Commit badge
         run: |
+          set -euo pipefail
           git config user.name github-actions
           git config user.email github-actions@github.com
           git add .github/badges/docker-pulls.json

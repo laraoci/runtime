@@ -63,6 +63,18 @@ on:
           release path can be exercised without writing a single
           ghcr.io/laraoci/* tag. Empty means "use the config", which is what
           every real release does.
+      rebuild_stamp:
+        required: false
+        type: string
+        default: ""
+        description: >-
+          Non-empty ONLY on the scheduled-rebuild path (§9.3, D41, D44). Passed
+          to the graph root as the REBUILD_STAMP build arg, which RUN 1
+          references - so the apt layer's cache key changes weekly and D43's
+          `apt-get -y upgrade` re-executes. Empty on every release leg, which is
+          what keeps the release path's cache keys unchanged. It is a DATE, not a
+          nonce: two legs of the same rebuild must agree, or runtime's amd64 and
+          arm64 halves would be built against different package sets.
       structure_test:
         required: false
         type: boolean
@@ -245,6 +257,7 @@ jobs:
           USER_GID: ${{ steps.identity.outputs.gid }}
           REGISTRY: ${{ steps.ns.outputs.registry }}
           DATED_SUFFIX: ${{ inputs.dated_suffix }}
+          REBUILD_STAMP: ${{ inputs.rebuild_stamp }}
         run: |
           set -euo pipefail
           # strenv, not string interpolation: the image name reaches a query, a
@@ -269,6 +282,17 @@ jobs:
               echo "PARENT_REF=${REGISTRY}/${parent}:${PHP}-${DEBIAN}${DATED_SUFFIX}"
             else
               echo "BASE_DIGEST=@${BASE_DIGEST}"
+              # THE GRAPH ROOT ONLY (§9.3, D44). RUN 1 - the one instruction in
+              # this repository that touches apt - lives in runtime's Dockerfile
+              # and nowhere else, so runtime is the only image with a layer to
+              # invalidate. A child's cache key is chained to its parent's
+              # CONTENT: it rebuilds when runtime's digest moves, and restores
+              # from type=gha in the quiet weeks when it did not. Passing the
+              # stamp to a child would cold-build 30 legs for nothing and make
+              # BuildKit warn about an unused build argument on every one.
+              if [ -n "$REBUILD_STAMP" ]; then
+                echo "REBUILD_STAMP=${REBUILD_STAMP}"
+              fi
             fi
             echo 'LARAOCI_EOF'
           } >> "$GITHUB_OUTPUT"

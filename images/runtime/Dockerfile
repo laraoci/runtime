@@ -24,6 +24,33 @@ FROM php:${PHP_VERSION}-fpm-${DEBIAN_RELEASE}${BASE_DIGEST}
 ARG USER_NAME=laravel
 ARG USER_UID=1000
 ARG USER_GID=1000
+# §9.3 / D41's half of the weekly rebuild, and D44's mechanism.
+#
+# EMPTY ON EVERY RELEASE LEG. The expanded RUN command below therefore reads
+# `: "REBUILD_STAMP="` on the release path, which is a constant - so the release
+# path's cache keys are byte-identical to what they were before this line
+# existed, apart from the one unavoidable invalidation the first time it ships.
+# That is the property 🧭 1 exists to preserve: D41 declined to fix this in M4
+# precisely because a blanket change costs rebuild time on 36 legs that
+# legitimately hit cache.
+#
+# Set to the run's UTC date by .github/workflows/rebuild.yml, which is the only
+# caller that sets it. A changed value changes this layer's cache key, the layer
+# re-executes, and `apt-get -y upgrade` on the line below RUNS AGAIN.
+#
+# THE REFERENCE MUST STAY INSIDE THE SAME RUN AS THE UPGRADE. Both halves are
+# required and neither substitutes for the other (D41 corrected, D43): a busted
+# layer with no upgrade in it reproduces the same package set - measured, on a
+# completely cold cache - and an upgrade in a layer that is never re-executed
+# never runs. tests/unit/workflows.bats asserts the two are one instruction, so
+# splitting them for readability fails CI instead of silently restoring the
+# byte-identical rebuild §9.3 exists to prevent.
+#
+# Not `no-cache-filters`: this Dockerfile has no named stages to target, so that
+# option would have to invent one, and a later rename would silently disable the
+# invalidation (D44, C3). Not `no-cache: true`: that cold-builds all 30 child
+# legs every week even when runtime rebuilt to the same digest.
+ARG REBUILD_STAMP=""
 
 COPY --from=mlocati/php-extension-installer:2@sha256:b6d3fa381b9ba5cf051117c1c601d6a523b590e534bf3d56eb4fbe352949c138 \
      /usr/bin/install-php-extensions /usr/local/bin/
@@ -93,6 +120,7 @@ COPY --from=mlocati/php-extension-installer:2@sha256:b6d3fa381b9ba5cf051117c1c60
 # back to Noninteractive on its own, verified on this base rather than assumed.
 # hadolint ignore=DL3005,DL3008,SC2016
 RUN set -eux; \
+    : "REBUILD_STAMP=${REBUILD_STAMP}"; \
     install-php-extensions \
       bcmath exif gd imagick intl opcache pcntl \
       pdo_mysql pdo_pgsql redis sockets zip; \

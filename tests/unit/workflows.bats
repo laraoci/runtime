@@ -745,3 +745,61 @@ hadolint_step() {
     fi
   done
 }
+
+@test "workflows: the rebuild stamp and D43's upgrade are in ONE instruction (§9.3, D41+D43)" {
+  # BOTH HALVES OR NEITHER. Busting a layer that has no upgrade in it reproduces
+  # the same package set (D43's measurement: a completely cold rebuild produced
+  # linux-libc-dev 6.12.100-1 again). An upgrade inside a layer that is never
+  # re-executed never runs (D41). The two are only a control when they are the
+  # SAME instruction, so that is what is asserted - not that both exist somewhere
+  # in the file.
+  local run1
+  run1="$(awk '/^RUN set -eux; \\$/{f=1} f{print} f && !/\\$/{exit}' \
+    images/runtime/Dockerfile | head -n 40)"
+  [[ "$run1" == *'REBUILD_STAMP'* ]] || {
+    echo "RUN 1 does not reference REBUILD_STAMP - the weekly rebuild cannot invalidate it" >&2
+    echo "$run1" >&2
+    false
+  }
+  [[ "$run1" == *'apt-get -y upgrade'* ]] || {
+    echo "RUN 1 lost D43's upgrade - invalidation alone reproduces the same packages" >&2
+    false
+  }
+}
+
+@test "workflows: the rebuild stamp reaches the graph root only (§9.3)" {
+  # A child declares PARENT_REF and no stamp: its cache key is chained to its
+  # parent's CONTENT, so it rebuilds when runtime moves and restores from
+  # type=gha when runtime did not. Passing the arg to a child would also make
+  # BuildKit warn about an unused build argument on 30 of 36 legs.
+  local body
+  body="$(yq -r '.jobs.build.steps[] | select(.id == "args") | .run' \
+    .github/workflows/build.yml)"
+  [[ "$body" == *'REBUILD_STAMP'* ]]
+  # The stamp must sit in the same else-branch as BASE_DIGEST - the root branch.
+  local after_else
+  after_else="${body##*BASE_DIGEST}"
+  [[ "$after_else" == *'REBUILD_STAMP'* ]]
+}
+
+@test "workflows: the release path's cache behaviour is untouched (H3, D41)" {
+  # THE OTHER HALF OF 🧭 1. The scheduled path must not buy its invalidation by
+  # changing what the release path does. Both expressions must still be gated on
+  # inputs.push and on NOTHING ELSE - in particular not on inputs.rebuild_stamp.
+  local from to
+  from="$(yq -r '.jobs.build.steps[] | select(.id == "build") | .with["cache-from"]' \
+    .github/workflows/build.yml)"
+  to="$(yq -r '.jobs.build.steps[] | select(.id == "build") | .with["cache-to"]' \
+    .github/workflows/build.yml)"
+  [ "$from" = "\${{ inputs.push && 'type=gha' || '' }}" ]
+  [[ "$to" == *"inputs.push"* ]]
+  [[ "$from" != *"rebuild_stamp"* ]]
+  [[ "$to" != *"rebuild_stamp"* ]]
+  # And no-cache must not appear at all - option (c) was rejected (D44).
+  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with["no-cache"] // "absent"' \
+    .github/workflows/build.yml
+  [ "$output" = "absent" ]
+  run yq -r '.jobs.build.steps[] | select(.id == "build") | .with["no-cache-filters"] // "absent"' \
+    .github/workflows/build.yml
+  [ "$output" = "absent" ]
+}
