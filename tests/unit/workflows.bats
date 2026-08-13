@@ -1000,3 +1000,74 @@ hadolint_step() {
     .github/workflows/release.yml)"
   [[ "$body" == *"include-deprecated"* ]]
 }
+
+@test "rebuild: the caller grants every permission release.yml's jobs request (startup validation)" {
+  # THE BUG THIS PINS, measured at 🚦 Gate 2 on run 31689740131 - rebuild.yml's
+  # first ever dispatch, which died as `startup_failure`.
+  #
+  # GitHub validates the permission requirements of EVERY job in a called
+  # workflow BEFORE it evaluates a single `if:`. release.yml's `notes` job asks
+  # for contents: write and is gated on a tag ref, so it never RUNS on a
+  # rebuild - but its request is still validated, and the caller granting
+  # contents: read killed the whole workflow before job one.
+  #
+  # The failure mode is the worst shape available to this repository: no jobs,
+  # no logs, and NO ISSUE FILED, because `report` cannot run in a workflow that
+  # never started. On a live cron that is a rebuild failing silently every
+  # Monday while 🧭 3's reusable issue - the thing that exists to make failure
+  # loud - never fires.
+  local yq scope level granted want rows
+  yq="${YQ:-$(bin/fetch-tools.sh --path yq)}"
+
+  rank() {
+    case "$1" in
+      write) echo 2 ;;
+      read) echo 1 ;;
+      *) echo 0 ;;
+    esac
+  }
+
+  # One "<scope> <level>" line per permission entry across every release.yml
+  # job. Deliberately the dumbest expression that works: the first version of
+  # this test used jq's `any(...)`, which mikefarah/yq does not have, so the
+  # command errored, the loop read nothing, and the test PASSED WITH THE BUG
+  # PRESENT. A vacuous assertion is the exact failure this file exists to catch.
+  rows="$("$yq" -r '
+    .jobs | to_entries[] | (.value.permissions // {}) | to_entries[]
+    | .key + " " + .value' .github/workflows/release.yml)"
+
+  # The guard against that: release.yml demonstrably HAS permission blocks, so
+  # an empty read means the query broke, not that there is nothing to check.
+  [ -n "$rows" ] || {
+    echo "read no permissions from release.yml - the yq query is broken, and" >&2
+    echo "this test would otherwise pass by checking nothing at all" >&2
+    false
+  }
+
+  # Highest level requested per scope.
+  declare -A want=()
+  while read -r scope level; do
+    [ -z "$scope" ] && continue
+    if [ "$(rank "$level")" -gt "$(rank "${want[$scope]:-none}")" ]; then
+      want["$scope"]="$level"
+    fi
+  done <<< "$rows"
+
+  [ "${want[contents]:-none}" = "write" ] || {
+    echo "expected release.yml to request contents: write somewhere (the notes" >&2
+    echo "job creates a GitHub Release). Got '${want[contents]:-none}' - if that" >&2
+    echo "changed deliberately, this test's premise needs revisiting." >&2
+    false
+  }
+
+  for scope in "${!want[@]}"; do
+    granted="$("$yq" -r ".jobs.rebuild.permissions.\"${scope}\" // \"none\"" \
+      .github/workflows/rebuild.yml)"
+    [ "$(rank "$granted")" -ge "$(rank "${want[$scope]}")" ] || {
+      echo "release.yml has a job requesting '${scope}: ${want[$scope]}', but" >&2
+      echo "rebuild.yml's calling job grants '${scope}: ${granted}'." >&2
+      echo "GitHub rejects this at STARTUP, even though that job would be skipped." >&2
+      false
+    }
+  done
+}
