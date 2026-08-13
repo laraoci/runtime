@@ -544,7 +544,16 @@ jobs:
           # release can actually clear: an unfixable CVE would otherwise block
           # every release until upstream moved, and a gate that can never be
           # satisfied is a gate that gets switched off (🧭 3).
-          trivy image --ignore-unfixed --severity CRITICAL,HIGH --exit-code 1 "$REF"
+          #
+          # 🚦 GATE 2 SCRATCH - --ignore-unfixed DELIBERATELY REMOVED, NEVER
+          # MERGED. Dropping it makes the gate fail on the 168 unfixed
+          # CRITICAL/HIGH findings a Debian base always carries (measured
+          # locally against 8.4-trixie-20260813-2 before this was pushed, so no
+          # CI run was spent discovering whether it would fail). That is the
+          # exact 🧭 3 scenario: a CVE that cannot be fixed this week, which a
+          # naive implementation would file a fresh issue about every Monday
+          # forever. Restore this flag to close the issue again.
+          trivy image --severity CRITICAL,HIGH --exit-code 1 "$REF"
 
       - name: Vulnerability scan (advisory on PRs, §9.1)
         if: ${{ !inputs.push && inputs.structure_test }}
