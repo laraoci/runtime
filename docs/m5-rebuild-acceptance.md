@@ -1,6 +1,6 @@
 # 🚦 Gate 2 — the scheduled rebuild, demonstrated
 
-> **Status: the §9.3 acceptance test passes, on a SIMULATED Debian update.**
+> **Status: all six Gate 2 bullets exercised. The §9.3 acceptance test passes, on a SIMULATED Debian update.**
 > Everything below was executed against the throwaway namespace
 > `ghcr.io/laraoci/gate2`, from branch `m5-gate2`, on 2026-08-13. Not one
 > command in this document is a claim about what the pipeline would do; each is
@@ -254,55 +254,189 @@ worth correcting the spec's wording on.
 
 ---
 
-## 6. What this gate did NOT demonstrate
+## 6. §13 — the deprecation triple, with a control
 
-🚦 Gate 2 asks for six things. Three are demonstrated above, one is
-demonstrated in a weaker form than requested, and **two were not run**. Listing
-them rather than letting the reader infer coverage from what happens to be
-present.
+`8.3` was marked `deprecated` on the scratch branch via
+`make deprecate PHP=8.3 ON=2026-08-13`, which set `status` and `deprecated_on`
+together and preserved every comment in `config/images.yml` (its own census
+check). The matrix dropped from 36 legs to 24.
 
-| Gate 2 bullet | State |
+| Effect (§13) | Evidence |
 |---|---|
-| §9.3 acceptance test, demonstrated | **done** (§1), on a simulated update, outcome not mechanism (§4) |
-| Release path's cache unchanged | **not demonstrable** — nothing restores on any path (§4) |
-| Channel resolution repoints a `schedule` run; dated suffix correct | **done** (§3, §5) |
-| Contract untouched | **done** (§6, below) |
-| `deprecated` version neither rebuilt nor repointed, deliberate release still publishes | **NOT RUN** |
-| Forced scan failure opens exactly one issue; re-run opens no second | **NOT RUN** |
+| **Not rebuilt** by the schedule | [31716942050](https://github.com/laraoci/runtime/actions/runs/31716942050) — 24 legs, **zero** jobs mentioning 8.3 |
+| **Rolling tag frozen** | `8.3-trixie` still `sha256:b54644d1…` after the rebuild — unmoved |
+| *control:* a supported version still moves | `8.4-trixie` → `sha256:16543a08…` in the same run |
+| **Dated tags kept forever** | `8.3-trixie-20260813` and `-2` still resolve; no `-3` was ever minted for 8.3 |
+| **Deliberate release still publishes** | [31718533341](https://github.com/laraoci/runtime/actions/runs/31718533341), `workflow_dispatch` with `include_deprecated=true`, published `8.3-trixie-20260813-4` |
+| …and still does not repoint | `repoint: skipped` in that run |
 
-The last two require a further deprecation cycle and a forced-failure cycle
-against the throwaway namespace. They were stopped deliberately, to review the
-findings in §4 and §5 before spending more CI, not because anything blocked
-them.
+The control row is the point: "the tag did not move" is only evidence if
+something else's tag *did* move in the same run.
 
-**The scan-failure path is partially evidenced anyway, from §1:** the
-snapshot-pinned baseline failed the vulnerability gate on all six `runtime`
-legs and published nothing — no manifest list, no dated tag, no rolling tag. So
-"a scan failure fails loudly rather than publishing" is observed. What is *not*
-observed is the issue-filing half of 🧭 3: whether exactly one label-keyed issue
-is opened, reused on a second failure, and closed on the next pass.
+### The freeze is structural, not filtered
 
-**And 🧭 3 has one confirmed hole already**, from §2.1: a `startup_failure`
-files no issue at all, because `report` cannot run in a workflow that never
-started. That class of failure is invisible to the mechanism designed to make
-failure loud. Worth deciding whether anything should watch for it — a missing
-weekly run is not something the repository can currently notice.
+Tracing every path by which a deprecated version could reach the repoint job:
+
+| Path | `include_deprecated` | `is_stable_release` | Outcome |
+|---|---|---|---|
+| Tag push | `false` — not an input on `push:` | `true` | 8.3 never built |
+| Dispatch + `include_deprecated=true` | `true` | **`false`** — branch ref | 8.3 built, **repoint skipped entirely** |
+| Scheduled rebuild | `false` — never passed (rebuild.yml) | `true` | 8.3 never built |
+
+The only path that builds a deprecated version is the one path where the
+repoint does not run, and every path where the repoint runs is one that cannot
+build it. Trap 2's half-deprecation would require breaking two independent
+mechanisms at once.
+
+**A correction to the plan's wording.** 🚦 Gate 2 asked to show "a deliberate
+**tagged** release of that same version still would [publish]". That is not
+achievable and never was: a tag push carries no `include_deprecated` input, so
+a tag can never publish a deprecated version. The deliberate release is
+specifically a `workflow_dispatch`, which is what §13 says. Demonstrated in
+that form.
+
+### The deprecation tooling's own tests break when a deprecation happens
+
+Deprecating 8.3 on this branch turned **three unit tests red**, and none of
+them is a regression — each assumes 8.3 is `supported`, by reading the **live**
+`config/images.yml`:
+
+| Test | Why it fails |
+|---|---|
+| `build-chain: a child is built with PARENT_REF pointing at its parent` | hardcodes `--php 8.3`; `build-chain.sh` now refuses it — *"error: '8.3' is not a supported PHP version … supported: 8.4 8.5"* |
+| `deprecate: marks the version and records the freeze date (§13)` | `setup()` does `cp config/images.yml "$TMP/images.yml"`, then expects to deprecate 8.3 — but it is already deprecated, so `deprecate.sh` correctly no-ops and the date stays `2026-08-13`, not the expected `2026-11-30` |
+| `deprecate: is idempotent` | same cause |
+
+Confirmed as config-state coupling rather than breakage: running the same
+`build-chain.sh` command against `origin/main`'s config emits
+`PARENT_REF=ghcr.io/laraoci/runtime:8.3-trixie` exactly as the test expects.
+
+**This will happen on `main` the day 8.3 is genuinely deprecated** — that is,
+the first time the LOCI-050 tooling is used for its actual purpose, the suite
+that tests it goes red. `tests/fixtures/deprecated.yml` already exists and is
+the right input for both files; copying the live config into a fixture couples
+the tests to a value the tooling is designed to change.
+
+Not fixed here — it is outside 🚦 Gate 2 and this branch does not merge — but
+it should be fixed before any real deprecation.
 
 ---
 
-## 7. Branch hygiene
+## 7. 🧭 3 — one reusable issue, commented then closed
+
+Starting state: **no issue carried the `scheduled-rebuild` label**, which is
+what makes "exactly one" mean anything afterwards.
+
+The failure was forced by removing `--ignore-unfixed` from the vulnerability
+gate — chosen over widening the severity because an *unfixable* CVE is the
+precise scenario 🧭 3 names, and verified locally (168 findings, exit 1)
+before pushing, so no CI run was spent discovering whether it would fail.
+
+| Run | Result | Label state after |
+|---|---|---|
+| [31719715866](https://github.com/laraoci/runtime/actions/runs/31719715866) | failure | **#68 opened**, 0 comments |
+| [31720467009](https://github.com/laraoci/runtime/actions/runs/31720467009) | failure | **#68 still the only issue**, +1 comment |
+| [31721047200](https://github.com/laraoci/runtime/actions/runs/31721047200) | success | **#68 CLOSED** — *"Rebuild passed on … Closing."* |
+
+The issue body classified the failure correctly as **`vulnerability scan`**
+rather than "build", named all four failing `runtime` legs with their step, and
+stated that nothing was published and no rolling tag moved. Four legs, not six,
+because 8.3 was deprecated by then — the two mechanisms composed correctly
+without being designed together.
+
+The `report` job's own conclusion is `failure` on the failing runs. That is
+correct: §9.3 requires the run to fail *as well as* file, so it files and then
+exits 1.
+
+---
+
+## 8. Three robustness gaps in the reporting path
+
+None of these blocked the gate. All three matter for a job that runs
+unattended, and all three were observed rather than reasoned about.
+
+1. **A `startup_failure` files nothing.** §2.1's failure produced no issue,
+   because `report` cannot run in a workflow that never started. The repository
+   currently cannot notice a weekly rebuild that stopped happening.
+2. **`cosign sign` has no retry.** Run 31718533341 lost one leg to
+   `Post "https://fulcio.sigstore.dev/api/v2/signingCert": read: connection
+   reset by peer` — a transient Sigstore network failure. On a Monday cron that
+   is a red rebuild and a filed issue for a reason unrelated to security.
+   Triage is possible (the issue names the signing step), but the rebuild will
+   periodically cry wolf.
+3. **"Exactly one issue" is an assumption, not an invariant.** The lookup is
+   `gh issue list --label scheduled-rebuild --state open --limit 1` and takes
+   `.[0]`. If a second labelled issue ever existed — filed by hand, or the
+   label applied to something else — the workflow would comment on whichever
+   GitHub returned first and ignore the other indefinitely.
+
+---
+
+## 9. What this gate did NOT demonstrate
+
+All six 🚦 Gate 2 bullets are now exercised. One cannot be satisfied as
+written, and one is satisfied in a weaker form than the wording implies.
+Stating both rather than letting coverage be inferred.
+
+| Gate 2 bullet | State |
+|---|---|
+| §9.3 acceptance test, demonstrated | **done** (§1) — on a *simulated* update, and proving the **outcome, not the mechanism** (§4) |
+| Release path's cache unchanged | **not demonstrable** — nothing restores on any path (§4) |
+| Channel resolution repoints a `schedule` run; dated suffix correct | **done** (§3, §5) |
+| `deprecated` neither rebuilt nor repointed; deliberate release still publishes | **done** (§6), with a control |
+| Forced scan failure opens exactly one issue; re-run opens no second | **done** (§7), plus the close-on-pass half |
+| Contract untouched | **done** (§10) |
+
+The two qualifications, restated so they are not lost in a table:
+
+- **"The release path still restores from `type=gha`" cannot be shown**,
+  because no restore exists anywhere (§4). Recorded as an absence rather than
+  staged into something resembling the requested evidence.
+- **§1 proves that an unchanged base produced a different image with the fixed
+  package. It does not prove `REBUILD_STAMP` caused it** — `APT_SNAPSHOT` also
+  changed, and nothing would have restored from cache regardless. The mechanism
+  is proven only at unit scale, in `tests/unit/rebuild-cache.bats`.
+
+**What remains genuinely untested at full scale** is therefore the single
+claim the milestone rests on: that `REBUILD_STAMP` defeats a cache which would
+otherwise hide a Debian update. It cannot be tested until the cache actually
+restores something — which is issue #67. Whoever fixes the cache scope is also
+the person who can finally test this, and §9.3's corrected acceptance test is
+how they should.
+
+---
+
+## 10. Branch hygiene
 
 `m5-gate2` carries two kinds of commit and they must be separated on the way
 out:
 
 | Commit | Contents | Destination |
 |---|---|---|
-| `dce42a2` | `APT_SNAPSHOT` in `build.yml`, `release.yml`, `images/runtime/Dockerfile` | **never merges** — delete with the branch |
-| `b114252` | `contents: write` fix + its regression test | **cherry-pick to `main`** as a LOCI-049 fix |
+| `dce42a2` | `APT_SNAPSHOT` in `build.yml`, `release.yml`, `images/runtime/Dockerfile` | **never merges** |
+| `b114252` | `contents: write` fix + its regression test | **cherry-pick to `main`** |
+| `01d0043` | this document + the §9.3 correction | **cherry-pick to `main`** |
+| `6e0801f` | `8.3` marked `deprecated` in `config/images.yml` | **never merges** — deprecating a PHP version is a product decision, not a test artefact |
+| `90ce5b4` | `--ignore-unfixed` removed from the gate | **never merges** |
+| `9812e6c` | revert of `90ce5b4` | **never merges** — pairs with it |
 
-`b114252` touches only `.github/workflows/rebuild.yml` and
-`tests/unit/workflows.bats`, and contains no simulation code, so it
-cherry-picks cleanly.
+Only `b114252` and `01d0043` leave this branch:
+
+```bash
+git switch -c m5-gate2-land origin/main
+git cherry-pick b114252 01d0043
+```
+
+**Verified, not assumed.** Both applied to a scratch worktree cut from
+`origin/main` with zero conflicts; on the result 304/304 unit tests pass,
+`actionlint` and `hadolint` are clean, and
+`grep -rn "APT_SNAPSHOT\|snapshot.debian.org" .github/ images/ tests/ bin/`
+returns nothing — the simulation leaves no trace in code. The permission
+regression test passes against `main`'s `release.yml` specifically, which is
+the file it reads.
+
+`config/images.yml` on `main` still lists all three versions as `supported`;
+the 8.3 deprecation exists only on this branch.
 
 **The runtime contract was not touched.** `git diff main...m5-gate2 --
 tests/structure/` is empty; the only `images/` change is the simulation `ARG`,
