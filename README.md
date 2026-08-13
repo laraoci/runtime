@@ -1,6 +1,6 @@
 # LaraOCI
 
-![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Flaraoci%2Fruntime%2Fmain%2F.github%2Fbadges%2Fdocker-pulls.json&query=%24.message&label=Docker%20pulls&color=blue)
+![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Flaraoci%2Fruntime%2Fbadges%2F.github%2Fbadges%2Fdocker-pulls.json&query=%24.message&label=Docker%20pulls&color=blue)
 
 Production-ready OCI images for Laravel applications: secure defaults, a single
 shared runtime layer, and a maintained security posture. You bring `vendor/` and
@@ -15,14 +15,14 @@ weekly rebuilds.
 
 ## Image catalog
 
-| Image       | Parent               | Purpose                                                         |
-|-------------|----------------------|-----------------------------------------------------------------|
-| `runtime`   | `php:X.Y-fpm-trixie` | Shared layer: extensions, user, ini, entrypoint, imagick policy |
-| `cli`       | `runtime`            | Artisan commands, migrations, one-off tasks                     |
-| `fpm`       | `runtime`            | PHP-FPM behind Nginx/Caddy/Traefik                              |
-| `builder`   | `runtime`            | Composer + Node build toolchain (not for production runtime)    |
+| Image       | Parent               | Purpose                                                                                                                             |
+|-------------|----------------------|-------------------------------------------------------------------------------------------------------------------------------------|
+| `runtime`   | `php:X.Y-fpm-trixie` | Shared layer: extensions, user, ini, entrypoint, imagick policy                                                                     |
+| `cli`       | `runtime`            | Artisan commands, migrations, one-off tasks                                                                                         |
+| `fpm`       | `runtime`            | PHP-FPM behind Nginx/Caddy/Traefik                                                                                                  |
+| `builder`   | `runtime`            | Composer + Node build toolchain (not for production runtime)                                                                        |
 | `queue`     | `cli`                | Laravel queue worker - [drains on SIGTERM](#queue---graceful-shutdown-and-the-one-setting-you-must-change), raise your grace period |
-| `scheduler` | `cli`                | Laravel scheduler - [run exactly one replica](#scheduler---run-exactly-one-replica) |
+| `scheduler` | `cli`                | Laravel scheduler - [run exactly one replica](#scheduler---run-exactly-one-replica)                                                 |
 
 ## Configuration
 

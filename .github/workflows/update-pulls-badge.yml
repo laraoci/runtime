@@ -15,20 +15,15 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: badges
 
       - name: Calculate total pulls
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          images=(
-            runtime
-            cli
-            fpm
-            builder
-            queue
-            scheduler
-          )
+          images=(runtime cli fpm builder queue scheduler)
 
           total=0
 
@@ -43,6 +38,8 @@ jobs:
 
           echo "Total: $total"
 
+          mkdir -p .github/badges
+
           cat > .github/badges/docker-pulls.json <<EOF
           {
             "message": "$total",
@@ -56,4 +53,4 @@ jobs:
           git config user.email github-actions@github.com
           git add .github/badges/docker-pulls.json
           git commit -m "Update Docker pulls badge" || exit 0
-          git push
+          git push origin badges
