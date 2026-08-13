@@ -51,6 +51,24 @@ ARG USER_GID=1000
 # invalidation (D44, C3). Not `no-cache: true`: that cold-builds all 30 child
 # legs every week even when runtime rebuilt to the same digest.
 ARG REBUILD_STAMP=""
+# GATE 2 SIMULATION ONLY - NEVER MERGED. Pins the baseline build to a Debian
+# snapshot predating a known security update, so the rebuild that follows sees
+# a moved package version on an unchanged base digest.
+#
+# IT REWRITES debian.sources IN PLACE rather than replacing it with a one-line
+# `deb` entry, and that is the whole care in this edit. The base ships deb822
+# with THREE suites - trixie, trixie-updates, trixie-security - each Signed-By
+# the archive keyring. A one-line replacement fetches `trixie` ALONE (measured:
+# apt got 1 InRelease instead of 3), so the baseline's index cannot contain a
+# security update by construction. The simulation would then be moving two
+# variables at once - time, and whether the security archive exists - while the
+# acceptance record claimed it moved one. §9.3 is about a SECURITY fix
+# specifically, so that is the variable it cannot afford to confound.
+#
+# The -security substitution runs FIRST and the plain one is anchored with $:
+# `deb.debian.org/debian` is a prefix of `deb.debian.org/debian-security`, so
+# the unanchored order silently produces .../archive/debian/<TS>-security.
+ARG APT_SNAPSHOT=""
 
 COPY --from=mlocati/php-extension-installer:2@sha256:b6d3fa381b9ba5cf051117c1c601d6a523b590e534bf3d56eb4fbe352949c138 \
      /usr/bin/install-php-extensions /usr/local/bin/
@@ -124,6 +142,14 @@ RUN set -eux; \
     install-php-extensions \
       bcmath exif gd imagick intl opcache pcntl \
       pdo_mysql pdo_pgsql redis sockets zip; \
+    if [ -n "${APT_SNAPSHOT}" ]; then \
+        sed -i \
+            -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${APT_SNAPSHOT}|" \
+            -e "s|http://deb.debian.org/debian\$|https://snapshot.debian.org/archive/debian/${APT_SNAPSHOT}|" \
+            /etc/apt/sources.list.d/debian.sources; \
+        printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot; \
+        cat /etc/apt/sources.list.d/debian.sources; \
+    fi; \
     apt-get update; \
     apt-get -y upgrade; \
     apt-get install -y --no-install-recommends tini gettext-base; \

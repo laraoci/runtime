@@ -75,6 +75,20 @@ on:
           what keeps the release path's cache keys unchanged. It is a DATE, not a
           nonce: two legs of the same rebuild must agree, or runtime's amd64 and
           arm64 halves would be built against different package sets.
+      apt_snapshot:
+        required: false
+        type: string
+        default: ""
+        description: >-
+          🚦 GATE 2 SIMULATION ONLY - NEVER MERGED TO main. A snapshot.debian.org
+          timestamp (e.g. 20260730T000000Z). Non-empty pins the graph root's apt
+          sources to that snapshot, so a BASELINE build can be given a
+          deliberately stale package index and the rebuild that follows sees a
+          moved package version on an unchanged base digest. This is how the §9.3
+          acceptance test is demonstrated in a week when Debian happens to have
+          published nothing - and every artifact produced with it is labelled
+          SIMULATED. Delete this input, and images/runtime/Dockerfile's
+          ARG APT_SNAPSHOT, before the branch merges.
       structure_test:
         required: false
         type: boolean
@@ -258,6 +272,8 @@ jobs:
           REGISTRY: ${{ steps.ns.outputs.registry }}
           DATED_SUFFIX: ${{ inputs.dated_suffix }}
           REBUILD_STAMP: ${{ inputs.rebuild_stamp }}
+          # 🚦 Gate 2 simulation only - never merged.
+          APT_SNAPSHOT: ${{ inputs.apt_snapshot }}
         run: |
           set -euo pipefail
           # strenv, not string interpolation: the image name reaches a query, a
@@ -292,6 +308,12 @@ jobs:
               # BuildKit warn about an unused build argument on every one.
               if [ -n "$REBUILD_STAMP" ]; then
                 echo "REBUILD_STAMP=${REBUILD_STAMP}"
+              fi
+              # 🚦 GATE 2 SIMULATION ONLY - NEVER MERGED. Same seam, same
+              # reason: the apt sources RUN 1 reads live in the graph root and
+              # nowhere else, so pinning them is a graph-root-only concern.
+              if [ -n "$APT_SNAPSHOT" ]; then
+                echo "APT_SNAPSHOT=${APT_SNAPSHOT}"
               fi
             fi
             echo 'LARAOCI_EOF'

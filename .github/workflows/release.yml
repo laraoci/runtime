@@ -55,6 +55,17 @@ on:
         required: false
         type: boolean
         default: false
+      apt_snapshot:
+        description: >-
+          🚦 GATE 2 SIMULATION ONLY - NEVER MERGED. A snapshot.debian.org
+          timestamp (e.g. 20260730T000000Z) that pins the graph root's apt
+          sources, so a baseline can be built against a deliberately stale
+          package index. Used once, to demonstrate the §9.3 acceptance test in a
+          week when Debian published nothing. Everything it produces is labelled
+          SIMULATED.
+        required: false
+        type: string
+        default: ""
   # CALLED BY .github/workflows/rebuild.yml (§9.3, LOCI-049). The scheduled
   # rebuild reuses this entire orchestration - the staged matrix, the merge
   # jobs, release-required and the repoint - rather than duplicating it, because
@@ -91,6 +102,13 @@ on:
         description: >-
           Forwarded to build.yml, which passes it to the graph root as
           REBUILD_STAMP (🧭 1, D44). Empty on every release.
+      apt_snapshot:
+        required: false
+        type: string
+        default: ""
+        description: >-
+          🚦 GATE 2 SIMULATION ONLY - NEVER MERGED. See the workflow_dispatch
+          input of the same name.
       include_deprecated:
         required: false
         type: boolean
@@ -318,6 +336,8 @@ jobs:
       dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
       registry_namespace: ${{ needs.prepare.outputs.registry }}
       rebuild_stamp: ${{ inputs.rebuild_stamp }}
+      # 🚦 Gate 2 simulation only - never merged.
+      apt_snapshot: ${{ inputs.apt_snapshot }}
 
   merge-d0:
     needs: [ prepare, build-d0 ]
@@ -361,6 +381,8 @@ jobs:
       dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
       registry_namespace: ${{ needs.prepare.outputs.registry }}
       rebuild_stamp: ${{ inputs.rebuild_stamp }}
+      # 🚦 Gate 2 simulation only - never merged.
+      apt_snapshot: ${{ inputs.apt_snapshot }}
 
   merge-d1:
     needs: [ prepare, build-d1 ]
@@ -404,6 +426,8 @@ jobs:
       dated_suffix: ${{ needs.prepare.outputs.dated_suffix }}
       registry_namespace: ${{ needs.prepare.outputs.registry }}
       rebuild_stamp: ${{ inputs.rebuild_stamp }}
+      # 🚦 Gate 2 simulation only - never merged.
+      apt_snapshot: ${{ inputs.apt_snapshot }}
 
   merge-d2:
     needs: [ prepare, build-d2 ]
