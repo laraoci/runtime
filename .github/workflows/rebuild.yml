@@ -134,12 +134,25 @@ jobs:
     # The called workflow's job-level permissions are capped by what THIS job
     # grants, so the union of what release.yml's jobs ask for has to be here:
     # packages: write to publish, id-token: write for cosign's keyless OIDC,
-    # security-events: write for the SARIF upload. contents stays READ - a
-    # rebuild writes no GitHub release (release.yml's `notes` job is gated on a
-    # tag ref and is skipped here), and issues: write lives on `report`, not on
-    # the 36 legs that build images.
+    # security-events: write for the SARIF upload. issues: write lives on
+    # `report`, not on the 36 legs that build images.
+    #
+    # contents: write, AND IT IS NOT OPTIONAL, though a rebuild writes no
+    # GitHub release. This line previously read `contents: read` on the
+    # reasoning that release.yml's `notes` job - the only job that needs write -
+    # is gated on a tag ref and is therefore skipped on a rebuild. That
+    # reasoning is correct about RUNTIME and wrong about STARTUP: GitHub
+    # validates the permission requirements of EVERY job in a called workflow
+    # before it evaluates a single `if:`, so a skipped job's request still has
+    # to be granted. The result was `startup_failure` - no jobs, no logs, and
+    # NO ISSUE FILED, because `report` cannot run in a workflow that never
+    # started. A weekly cron would have failed silently every Monday and 🧭 3's
+    # reusable issue would never have fired.
+    #
+    # Measured, not reasoned: run 31689740131, rebuild.yml's first ever
+    # dispatch, caught at 🚦 Gate 2 before the schedule went live.
     permissions:
-      contents: read
+      contents: write
       packages: write
       id-token: write
       security-events: write
@@ -166,7 +179,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
+      contents: write
       # The narrowest scope that can file and close. Deliberately NOT on the
       # `rebuild` job: 36 build legs do not need to be able to write issues.
       issues: write
